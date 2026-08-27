@@ -4,6 +4,9 @@ __pycache__/
 .idea/
 .zed/
 
+# Agent run artifacts (inspectable step workspaces; never committed)
+runs/
+
 # Test / coverage artifacts
 .coverage
 coverage.xml
