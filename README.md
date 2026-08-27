@@ -1,4 +1,4 @@
-# code-factory
+# forge
 
 A system for taking projects from specification to shipped software with quality
 enforced along the whole lifecycle — and for measuring how changes to the system

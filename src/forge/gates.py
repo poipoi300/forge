@@ -1,6 +1,6 @@
 """Gate registry: the deterministic checks a project repo is expected to carry.
 
-This is the seed of the non-trivial part of code-factory — a machine-readable
+This is the seed of the non-trivial part of forge — a machine-readable
 description of which gates exist, so later stages (repo generation, trajectory
 measurement) can reason about them instead of grepping config files.
 """

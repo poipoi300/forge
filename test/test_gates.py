@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-from code_factory.gates import DETERMINISTIC_GATES, GateStage, gates_for_stage
+from forge.gates import DETERMINISTIC_GATES, GateStage, gates_for_stage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
