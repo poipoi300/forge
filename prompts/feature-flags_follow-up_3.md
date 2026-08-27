@@ -1,0 +1,5 @@
+We're adding a staging environment alongside prod and I need the flag service to handle that properly. Staging and prod need to be able to have completely different values for the same flag — like a flag can be on in staging while we test it and still off in prod. When someone creates a new flag it should just show up in both places automatically (off by default is fine), rather than us having to manually recreate it in each environment.
+
+Each of our apps already has an SDK key it uses to talk to the flag service, so I'd like that key to be what determines whether it's reading staging or prod values — the app shouldn't need to pass an environment name separately or know anything about environments at all, the key should just take care of it.
+
+Also want a "promote" button or action that takes a flag's current setup in staging and copies it over to prod once we're happy with it in testing, so we're not manually re-entering the same config twice. Let me know what you think makes sense for the key format and the promote flow.

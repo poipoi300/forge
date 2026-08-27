@@ -1,0 +1,5 @@
+Ran into a couple of situations the tool doesn't handle well. First, one of my roommates paid me back but only part of what he owed, he said he'd get the rest to me next week, and right now I don't have anywhere to log that so I'm just remembering it in my head which isn't great.
+
+Second thing, one of my roommates covered a bill for the other roommate directly, like totally separate from the shared house stuff, just one person paying another person back for something unrelated. I want to be able to record a payment between any two of us, not just "paying off what the app thinks you owe from expenses."
+
+So basically I need settlements to be able to be partial amounts, and I need to be able to record money moving between any pair of people for any reason, and have the overall who-owes-who picture update to reflect all of it correctly. Right now it feels like the app assumes a settlement always wipes out the whole balance between two people at once, which isn't how it's actually going in practice.

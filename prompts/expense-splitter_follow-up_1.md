@@ -1,0 +1,5 @@
+Okay this has been working great, but we just got back from a group trip to Europe and Japan and now it's a mess. A bunch of expenses were paid in euros, a bunch in yen, and a couple in USD from before we even left. I want to be able to enter an expense in whatever currency it actually happened in, and then have the balances all come out in USD so we can actually settle up.
+
+For the conversion, just use whatever the exchange rate was around the time the expense happened rather than today's rate, since some of this was weeks apart and rates moved a bit. I don't want to have to look up and type in the rate manually every time if we can avoid it, but if that's simplest for now that's fine too.
+
+One thing that matters a lot to me: the totals need to add up exactly, down to the cent, when we settle up. Last time I tried doing something like this in a spreadsheet the rounding was always a little off and someone ended up shorted a few cents, which is annoying on principle even if it's a tiny amount.

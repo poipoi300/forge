@@ -1,0 +1,5 @@
+We onboarded a bigger customer and it's causing problems. Their report generation jobs come in batches and flood the queue — one time they dumped a few thousand jobs in at once and everyone else's stuff just sat there for like an hour waiting behind it. Not really acceptable for the smaller customers.
+
+I want to add priorities so I can mark some jobs as more urgent than others, but honestly the bigger issue is fairness between customers. If one tenant queues up 10k jobs and another tenant only has 3, the tenant with 3 jobs shouldn't be stuck waiting behind the big batch — they should get a reasonable share of worker time regardless of how much the other tenant queued. Our services know which customer each job is for, so they can send whatever's needed when enqueuing.
+
+Also it'd help a lot to have some kind of per-tenant view — like, for a given customer, how many jobs do they have queued right now and what's their typical wait time. Just so we can see this stuff happening next time before someone complains.

@@ -1,0 +1,3 @@
+Prices keep changing on us — sometimes we run a sale on something, sometimes our supplier just raises what they charge us and we bump the price. Can you make it so changing a product's price doesn't mess with old records? Like if I look back at last week's end-of-day totals or reprint an old receipt, it should still show whatever the customer was actually charged at the time, not today's price.
+
+Also, separately, my dad wants to bump the price on our notebooks starting next Monday since that's when the new supplier cost kicks in, but he doesn't want to have to remember to sit down and change it right at midnight or whatever. Is there a way to schedule that so it just switches over on its own on the right day?
