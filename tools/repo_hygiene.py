@@ -66,7 +66,10 @@ def check_merge_conflict(paths: list[str]) -> int:
 def _display_path(path: str) -> str:
     escaped = repr(path)[1:-1]
     encoding = sys.stdout.encoding or "utf-8"
-    return escaped.encode(encoding, errors="backslashreplace").decode(encoding)
+    return "".join(
+        char if char.encode(encoding, errors="backslashreplace").decode(encoding) == char else ascii(char)[1:-1]
+        for char in escaped
+    )
 
 
 def check_case_conflict(_paths: list[str]) -> int:

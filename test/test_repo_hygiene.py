@@ -14,6 +14,8 @@ def stage_paths(tmp_path: Path, *names: bytes) -> None:
     # Stage both names even on filesystems that cannot store them side by side.
     entries = b"".join(b"100644 " + blob + b"\t" + name + b"\0" for name in names)
     subprocess.run(["git", "update-index", "-z", "--index-info"], cwd=tmp_path, input=entries, check=True)
+    indexed = subprocess.check_output(["git", "ls-files", "-z"], cwd=tmp_path)
+    assert indexed.split(b"\0") == [*sorted(names), b""]
 
 
 @pytest.mark.parametrize(
@@ -30,24 +32,39 @@ def test_tracked_filename_collisions(tmp_path: Path, first: str, second: str, co
     stage_paths(tmp_path, first.encode(), second.encode())
 
     result = subprocess.run(
-        [sys.executable, HYGIENE, "check-case-conflict"], cwd=tmp_path, capture_output=True, encoding="utf-8"
+        [sys.executable, HYGIENE, "check-case-conflict"],
+        cwd=tmp_path,
+        capture_output=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert result.returncode == int(collides), result.stderr
     assert result.stdout == (f"case-insensitive filename collision: {second} vs {first}\n" if collides else "")
 
 
 @pytest.mark.parametrize("errors", ["strict", "replace"])
-def test_collision_diagnostic_escapes_paths_on_one_line(tmp_path: Path, errors: str) -> None:
-    suffix = "éΩ\n\x1b\\xff".encode() + b"\xff"
-    stage_paths(tmp_path, b"A" + suffix, b"a" + suffix)
+@pytest.mark.parametrize(
+    ("encoding", "raw", "rendered"),
+    [
+        ("cp1252", "éΩ\n\x1b\\xff".encode() + b"\xff", r"é\u03a9\n\x1b\\xff\udcff"),
+        ("cp932", "\u301c\uff5e".encode(), "\\u301c\uff5e"),
+        ("shift_jis", "¥\\xa5".encode(), r"\xa5\\xa5"),
+    ],
+)
+def test_display_preserves_path_on_one_line(encoding: str, raw: bytes, rendered: str, errors: str) -> None:
     result = subprocess.run(
-        [sys.executable, HYGIENE, "check-case-conflict"],
-        cwd=tmp_path,
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; from repo_hygiene import _display_path; "
+                "print(_display_path(sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')))"
+            ),
+        ],
+        cwd=HYGIENE.parent,
+        input=raw,
         capture_output=True,
-        env={**os.environ, "PYTHONIOENCODING": f"cp1252:{errors}"},
+        check=True,
+        env={**os.environ, "PYTHONIOENCODING": f"{encoding}:{errors}"},
     )
-    rendered = r"é\u03a9\n\x1b\\xff\udcff"
-    assert result.returncode == 1, result.stderr
-    assert result.stdout.decode("cp1252").splitlines() == [
-        f"case-insensitive filename collision: a{rendered} vs A{rendered}"
-    ]
+    assert result.stdout.decode(encoding).splitlines() == [rendered]
