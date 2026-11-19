@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from pathlib import Path
 
 import yaml
@@ -63,12 +64,13 @@ def check_merge_conflict(paths: list[str]) -> int:
 
 
 def check_case_conflict(_paths: list[str]) -> int:
-    """Fail if two tracked files differ only by case (breaks on case-insensitive FS)."""
-    result = subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True)
+    """Fail if tracked paths collide after Unicode normalization and case folding."""
+    result = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True)
     seen: dict[str, str] = {}
     failed = 0
-    for tracked in result.stdout.splitlines():
-        key = tracked.lower()
+    for raw in result.stdout.split(b"\0")[:-1]:
+        tracked = raw.decode("utf-8", errors="surrogateescape")
+        key = unicodedata.normalize("NFC", tracked).casefold()
         if key in seen and seen[key] != tracked:
             print(f"case-insensitive filename collision: {tracked} vs {seen[key]}")
             failed = 1
