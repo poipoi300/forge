@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-HYGIENE = Path(__file__).resolve().parents[1] / "tools" / "repo_hygiene.py"
+HYGIENE = [sys.executable, "-m", "forge.hooks.hygiene"]
 
 
 def stage_paths(tmp_path: Path, *names: bytes) -> None:
@@ -32,7 +32,7 @@ def test_tracked_filename_collisions(tmp_path: Path, first: str, second: str, co
     stage_paths(tmp_path, first.encode(), second.encode())
 
     result = subprocess.run(
-        [sys.executable, HYGIENE, "check-case-conflict"],
+        [*HYGIENE, "check-case-conflict"],
         cwd=tmp_path,
         capture_output=True,
         encoding="utf-8",
@@ -57,11 +57,10 @@ def test_display_preserves_path_on_one_line(encoding: str, raw: bytes, rendered:
             sys.executable,
             "-c",
             (
-                "import sys; from repo_hygiene import _display_path; "
+                "import sys; from forge.hooks.hygiene import _display_path; "
                 "print(_display_path(sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')))"
             ),
         ],
-        cwd=HYGIENE.parent,
         input=raw,
         capture_output=True,
         check=True,

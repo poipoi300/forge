@@ -1,8 +1,9 @@
-"""Local reimplementations of the pre-commit-hooks checks.
+"""Repository hygiene checks, published as forge's base pre-commit hooks.
 
-Kept in-repo instead of pulling https://github.com/pre-commit/pre-commit-hooks
-so the hook chain has zero network dependency. Each function is one check;
-main() dispatches to one by subcommand name and exits non-zero on failure.
+Reimplements the pre-commit-hooks checks forge's projects use, so every
+project runs the same code at the forge revision it pins. Each function is
+one check; main() dispatches to one by subcommand name and exits non-zero on
+failure.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import tomllib
 import unicodedata
+from collections.abc import Sequence
 from pathlib import Path
 
 import yaml
@@ -157,7 +159,8 @@ def detect_private_key(paths: list[str]) -> int:
     return failed
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the named check over the given paths and return its exit status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "check",
@@ -176,7 +179,7 @@ def main() -> int:
     )
     parser.add_argument("--max-kb", type=int, default=2048)
     parser.add_argument("paths", nargs="*")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     handlers = {
         "trailing-whitespace": lambda: trailing_whitespace(args.paths),

@@ -24,30 +24,30 @@ class Gate:
 
     Attributes:
         name: Hook id as it appears in .pre-commit-config.yaml.
-        stage: Whether it blocks commits or pushes.
-        ci_enforced: Whether CI re-runs it server-side (hooks are bypassable).
+        stage: Whether it blocks commits or pushes. CI re-runs every gate,
+            since hooks are bypassable.
     """
 
     name: str
     stage: GateStage
-    ci_enforced: bool
 
 
 DETERMINISTIC_GATES: tuple[Gate, ...] = (
-    Gate("trailing-whitespace", GateStage.COMMIT, ci_enforced=False),
-    Gate("end-of-file-fixer", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-merge-conflict", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-case-conflict", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-added-large-files", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-yaml", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-toml", GateStage.COMMIT, ci_enforced=False),
-    Gate("check-json", GateStage.COMMIT, ci_enforced=False),
-    Gate("debug-statements", GateStage.COMMIT, ci_enforced=False),
-    Gate("detect-private-key", GateStage.COMMIT, ci_enforced=False),
-    Gate("ruff-format", GateStage.COMMIT, ci_enforced=True),
-    Gate("ruff-check", GateStage.COMMIT, ci_enforced=True),
-    Gate("mypy", GateStage.COMMIT, ci_enforced=True),
-    Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=True),
+    Gate("trailing-whitespace", GateStage.COMMIT),
+    Gate("end-of-file-fixer", GateStage.COMMIT),
+    Gate("check-merge-conflict", GateStage.COMMIT),
+    Gate("check-case-conflict", GateStage.COMMIT),
+    Gate("check-added-large-files", GateStage.COMMIT),
+    Gate("check-yaml", GateStage.COMMIT),
+    Gate("check-toml", GateStage.COMMIT),
+    Gate("check-json", GateStage.COMMIT),
+    Gate("debug-statements", GateStage.COMMIT),
+    Gate("detect-private-key", GateStage.COMMIT),
+    Gate("no-todo", GateStage.COMMIT),
+    Gate("tests-and-diff-coverage", GateStage.PUSH),
+    Gate("ruff-format", GateStage.COMMIT),
+    Gate("ruff-check", GateStage.COMMIT),
+    Gate("mypy", GateStage.COMMIT),
 )
 
 

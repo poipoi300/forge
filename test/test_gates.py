@@ -1,39 +1,136 @@
-"""The gate registry must stay in sync with the actual hook/CI configs."""
+"""The gate registry, the published hooks, forge's own hooks and the CI workflows agree."""
 
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
 from forge.gates import DETERMINISTIC_GATES, GateStage, gates_for_stage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+PUBLISHED = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text(encoding="utf-8"))
+CONFIG = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
+# Keys that decide when and how a hook runs; pre-commit's defaults fill the gaps.
+HOOK_DEFAULTS: dict[str, Any] = {
+    "types": ["file"],
+    "types_or": [],
+    "exclude": "^$",
+    "files": "",
+    "pass_filenames": True,
+    "always_run": False,
+    "require_serial": False,
+}
 
 
-def _hook_ids_in_precommit_config() -> set[str]:
-    config = yaml.safe_load((REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8"))
-    return {hook["id"] for repo in config["repos"] for hook in repo["hooks"]}
+def load_workflow(name: str) -> dict[str, Any]:
+    # BaseLoader keeps GitHub's "on" key and expressions as strings.
+    text = (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+    workflow: dict[str, Any] = yaml.load(text, Loader=yaml.BaseLoader)
+    return workflow
+
+
+def config_hooks() -> dict[str, dict[str, Any]]:
+    return {hook["id"]: hook for repo in CONFIG["repos"] for hook in repo["hooks"]}
+
+
+def stages(hook: dict[str, Any]) -> list[str]:
+    return list(hook.get("stages", CONFIG["default_stages"]))
 
 
 def test_registry_matches_precommit_config() -> None:
-    registry_ids = {g.name for g in DETERMINISTIC_GATES}
-    assert registry_ids == _hook_ids_in_precommit_config()
+    hooks = config_hooks()
+    assert [gate.name for gate in DETERMINISTIC_GATES] == list(hooks)
+    for gate in DETERMINISTIC_GATES:
+        assert stages(hooks[gate.name]) == [gate.stage.value]
 
 
 def test_push_stage_holds_only_slow_gates() -> None:
     assert {g.name for g in gates_for_stage(GateStage.PUSH)} == {"tests-and-diff-coverage"}
 
 
-def test_ci_enforced_gates_appear_in_workflow() -> None:
-    workflow_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    # CI runs the tools directly rather than via pre-commit; map hook id -> the
-    # command substring that proves the gate is present in the workflow.
-    expected_evidence = {
-        "ruff-format": "ruff format --check",
-        "ruff-check": "ruff check",
-        "mypy": "mypy .",
-        "tests-and-diff-coverage": "coverage_gate.sh",
-    }
-    ci_gates = {g.name for g in DETERMINISTIC_GATES if g.ci_enforced}
-    assert ci_gates == set(expected_evidence)
-    for evidence in expected_evidence.values():
-        assert evidence in workflow_text
+@pytest.mark.parametrize("published", PUBLISHED, ids=lambda hook: hook["id"])
+def test_forge_runs_each_published_hook_from_its_own_checkout(published: dict[str, Any]) -> None:
+    own = config_hooks()[published["id"]]
+    assert published["language"] == "python"
+    assert own["language"] == "system"
+    assert own["entry"] == f"uv run --locked {published['entry']}"
+    for key, default in HOOK_DEFAULTS.items():
+        assert own.get(key, default) == published.get(key, default), key
+    assert stages(own) == published.get("stages", ["pre-commit"])
+
+
+def test_every_published_entry_point_is_a_console_script() -> None:
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for hook in PUBLISHED:
+        assert f'\n{hook["entry"].split()[0]} = "forge.hooks.' in pyproject
+
+
+def test_ci_calls_the_published_workflow_on_this_checkout() -> None:
+    ci = load_workflow("ci.yml")
+    assert set(ci["on"]) == {"push", "pull_request"}
+    assert ci["permissions"] == {"contents": "read"}
+    (job,) = ci["jobs"].values()
+    assert job["uses"] == "./.github/workflows/gates.yml"
+
+
+def steps_by_run(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {step["run"]: step for step in job["steps"] if "run" in step}
+
+
+def test_published_workflow_runs_both_stages_on_every_lane_as_blocking_steps() -> None:
+    gates = load_workflow("gates.yml")
+    assert set(gates["on"]) == {"workflow_call"}
+    assert gates["permissions"] == {"contents": "read"}
+    lane = gates["jobs"]["lane"]
+    assert lane["strategy"]["matrix"]["os"] == "${{ fromJSON(inputs.os) }}"
+    assert lane["strategy"]["fail-fast"] == "false"
+    runs = steps_by_run(lane)
+    commit = runs["uv run --locked pre-commit run --hook-stage pre-commit --all-files"]
+    push = runs["uv run --locked pre-commit run --hook-stage pre-push --all-files"]
+    collect = runs["uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files"]
+    # The push stage skips only the coverage hook, and only because the next gate step runs it.
+    assert push["env"] == {"SKIP": "tests-and-diff-coverage"}
+    assert set(collect["env"]) == {"FORGE_COVERAGE_COLLECT"}
+    order = list(runs)
+    assert order.index(commit["run"]) < order.index(push["run"]) < order.index(collect["run"])
+    for job in gates["jobs"].values():
+        for scope in (job, *job["steps"]):
+            assert "continue-on-error" not in scope
+            assert "|| true" not in scope.get("run", "")
+            if "pre-commit run" in scope.get("run", ""):
+                assert "if" not in scope
+
+
+def test_published_workflow_gates_the_merge_of_every_lane() -> None:
+    gates = load_workflow("gates.yml")
+    lane, merge = gates["jobs"]["lane"], gates["jobs"]["coverage"]
+    assert merge["needs"] == "lane"
+    assert "if" not in merge
+    (upload,) = (s for s in lane["steps"] if s.get("uses", "").startswith("actions/upload-artifact@"))
+    (download,) = (s for s in merge["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+    collect = steps_by_run(lane)[
+        "uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files"
+    ]
+    final = steps_by_run(merge)[
+        "uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files"
+    ]
+    assert upload["with"]["path"] == collect["env"]["FORGE_COVERAGE_COLLECT"]
+    assert upload["with"]["name"] == "forge-coverage-${{ strategy.job-index }}"
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert download["with"] == {"pattern": "forge-coverage-*", "path": final["env"]["FORGE_COVERAGE_REPORTS"]}
+
+
+def test_published_workflow_pins_actions_and_runners() -> None:
+    for name in ("gates.yml", "ci.yml"):
+        workflow = load_workflow(name)
+        for job in workflow["jobs"].values():
+            assert "latest" not in str(job.get("runs-on", ""))
+            for step in job.get("steps", []):
+                action = step.get("uses")
+                if action:
+                    revision = action.partition("@")[2]
+                    assert len(revision) == 40 and all(c in "0123456789abcdef" for c in revision), action
+                if action and action.startswith("actions/checkout@"):
+                    assert step["with"]["persist-credentials"] == "false"
+                    assert step["with"]["fetch-depth"] == "0"

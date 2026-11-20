@@ -1,0 +1,208 @@
+# forge's gates for any project, called by reference:
+#
+#   jobs:
+#     gates:
+#       uses: poipoi300/forge/.github/workflows/gates.yml@<forge commit SHA>
+#       with: { ... project inputs ... }
+#       secrets:
+#         forge-token: ${{ secrets.FORGE_TOKEN }}
+#
+# The project's `.pre-commit-config.yaml` owns every gate command. Each lane
+# runs the commit stage and the push stage through pre-commit on its own
+# platform, with the coverage hook collecting that platform's reports; the
+# coverage job then merges every lane and gates the changed lines once.
+name: forge gates
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: JSON array of runner images, one lane each.
+        type: string
+        default: '["ubuntu-24.04", "macos-15", "windows-2025"]'
+      apt-packages:
+        description: Space-separated apt packages for Linux lanes.
+        type: string
+        default: ""
+      brew-packages:
+        description: Space-separated Homebrew formulae for macOS lanes.
+        type: string
+        default: ""
+      choco-packages:
+        description: Space-separated Chocolatey packages for Windows lanes.
+        type: string
+        default: ""
+      rust:
+        description: Install the toolchain rust-toolchain.toml pins, with llvm-tools for coverage.
+        type: boolean
+        default: false
+      cargo-tools:
+        description: Comma-separated cargo tools for taiki-e/install-action, each pinned (cargo-nextest@0.9.151).
+        type: string
+        default: ""
+      uv-version:
+        description: The uv version to install; empty reads the project's required-version.
+        type: string
+        default: ""
+      env:
+        description: KEY=VALUE lines exported to every step of every job.
+        type: string
+        default: ""
+      free-disk-space:
+        description: Remove unused SDKs from Linux runners before building.
+        type: boolean
+        default: false
+      prune-paths:
+        description: Space-separated paths removed after the other push gates, before coverage collection.
+        type: string
+        default: ""
+    secrets:
+      forge-token:
+        description: A read-only token for poipoi300/forge, which pre-commit clones at the pinned rev while forge is private.
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lane:
+    name: gates (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - &export-env
+        name: Export the project's environment
+        if: inputs.env != ''
+        env:
+          PROJECT_ENV: ${{ inputs.env }}
+        run: printf '%s\n' "$PROJECT_ENV" >> "$GITHUB_ENV"
+      - name: Free runner disk space
+        if: inputs.free-disk-space && runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      # Hygiene hooks see the committed bytes, not a CRLF checkout.
+      - &keep-line-endings
+        name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+      - &checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &forge-access
+        name: Let pre-commit fetch forge
+        env:
+          FORGE_TOKEN: ${{ secrets.forge-token }}
+        run: |
+          if [[ -n $FORGE_TOKEN ]]; then
+            git config --global url."https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge".insteadOf https://github.com/poipoi300/forge
+          fi
+      - name: Install apt packages
+        if: runner.os == 'Linux' && inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $PACKAGES
+      - name: Install Homebrew packages
+        if: runner.os == 'macOS' && inputs.brew-packages != ''
+        env:
+          PACKAGES: ${{ inputs.brew-packages }}
+        run: brew install $PACKAGES
+      - name: Install Chocolatey packages
+        if: runner.os == 'Windows' && inputs.choco-packages != ''
+        env:
+          PACKAGES: ${{ inputs.choco-packages }}
+        run: choco install -y --no-progress $PACKAGES
+      - name: Install the pinned Rust toolchain
+        if: inputs.rust
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: inputs.rust
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        if: inputs.cargo-tools != ''
+        with:
+          tool: ${{ inputs.cargo-tools }}
+      - &setup-uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
+      - &sync
+        name: Install the project's gate tools
+        run: uv sync --locked
+      - name: Commit stage
+        run: uv run --locked pre-commit run --hook-stage pre-commit --all-files
+      - name: Push stage, before coverage
+        env:
+          SKIP: tests-and-diff-coverage
+        run: uv run --locked pre-commit run --hook-stage pre-push --all-files
+      - name: Free the earlier builds before coverage
+        if: inputs.prune-paths != ''
+        env:
+          PATHS: ${{ inputs.prune-paths }}
+        run: |
+          rm -rf $PATHS
+          df -h .
+      - name: Collect this platform's coverage
+        env:
+          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage
+        run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: forge-coverage-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/forge-coverage
+          if-no-files-found: error
+
+  coverage:
+    needs: lane
+    runs-on: ubuntu-24.04
+    steps:
+      - *export-env
+      - *keep-line-endings
+      - *checkout
+      - *forge-access
+      - *setup-uv
+      - *sync
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: forge-coverage-*
+          path: ${{ runner.temp }}/forge-coverage
+      # A pull request compares with its base; a push to the default branch
+      # compares its two tips, which survives a force push; any other push
+      # compares with the default branch.
+      - name: Choose the coverage base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n $PR_BASE ]]; then
+            base=$PR_BASE notation=...
+          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" && ! $BEFORE =~ ^0+$ ]]; then
+            base=$BEFORE notation=..
+          else
+            base=origin/$DEFAULT_BRANCH notation=...
+          fi
+          if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+            git -c 'credential.helper=!gh auth git-credential' fetch --no-tags origin "${base#origin/}"
+          fi
+          {
+            echo "DIFF_COVER_COMPARE_BRANCH=$base"
+            echo "FORGE_DIFF_RANGE_NOTATION=$notation"
+          } >> "$GITHUB_ENV"
+      - name: Gate changed lines on every platform's coverage
+        env:
+          FORGE_COVERAGE_REPORTS: ${{ runner.temp }}/forge-coverage
+        run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files

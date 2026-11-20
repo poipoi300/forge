@@ -10,6 +10,9 @@ dependencies = [
 
 [project.scripts]
 forge = "forge.cli:main"
+forge-hygiene = "forge.hooks.hygiene:main"
+forge-todo-gate = "forge.hooks.todo:main"
+forge-coverage-gate = "forge.hooks.coverage:main"
 
 [build-system]
 requires = ["uv_build>=0.8"]

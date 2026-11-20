@@ -1,96 +1,109 @@
 # Anti-slop gates. Fast checks block the commit; slow ones block the push.
-# Everything runs locally via `language: system` — no hooks are fetched from
-# GitHub, so this works fully offline after `uv sync --group dev`.
+# forge publishes these hooks in .pre-commit-hooks.yaml for projects to pin;
+# here they run from this checkout through `uv run`, so a change to a hook is
+# gated by itself. test/test_gates.py holds both files to the same hooks.
 #
 # Install once:  uv run pre-commit install --install-hooks -t pre-commit -t pre-push
-# Run manually:  uv run pre-commit run --all-files
-#
-# Python tool versions are pinned in [dependency-groups] dev in pyproject.toml,
-# so `uv run` here uses exactly what CI uses. Bypass in a genuine emergency
-# with `git commit --no-verify` — CI still enforces the same gates on push.
+# Run manually:  uv run --locked pre-commit run --all-files
 
 default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
 exclude: '^\.venv/'
 
 repos:
-  # Repo hygiene: trivial, dependency-free checks (see tools/repo_hygiene.py
-  # for what each one does).
+  # forge's published hooks, from this checkout.
   - repo: local
     hooks:
       - id: trailing-whitespace
         name: trailing whitespace
-        entry: uv run python tools/repo_hygiene.py trailing-whitespace
+        entry: uv run --locked forge-hygiene trailing-whitespace
         language: system
         types: [text]
-        exclude: '\.(md|txt)$'  # keep hard line breaks in prose
+        exclude: '\.(md|txt)$'
 
       - id: end-of-file-fixer
         name: end of file fixer
-        entry: uv run python tools/repo_hygiene.py end-of-file-fixer
+        entry: uv run --locked forge-hygiene end-of-file-fixer
         language: system
         types: [text]
 
       - id: check-merge-conflict
         name: check for merge conflict markers
-        entry: uv run python tools/repo_hygiene.py check-merge-conflict
+        entry: uv run --locked forge-hygiene check-merge-conflict
         language: system
         types: [text]
 
       - id: check-case-conflict
         name: check for case-insensitive filename collisions
-        entry: uv run python tools/repo_hygiene.py check-case-conflict
+        entry: uv run --locked forge-hygiene check-case-conflict
         language: system
         pass_filenames: false
         always_run: true
 
       - id: check-added-large-files
         name: check for added large files (>2MB)
-        entry: uv run python tools/repo_hygiene.py check-added-large-files --max-kb=2048
+        entry: uv run --locked forge-hygiene check-added-large-files --max-kb=2048
         language: system
 
       - id: check-yaml
         name: check yaml syntax
-        entry: uv run python tools/repo_hygiene.py check-yaml
+        entry: uv run --locked forge-hygiene check-yaml
         language: system
         types: [yaml]
 
       - id: check-toml
         name: check toml syntax
-        entry: uv run python tools/repo_hygiene.py check-toml
+        entry: uv run --locked forge-hygiene check-toml
         language: system
         types: [toml]
 
       - id: check-json
         name: check json syntax
-        entry: uv run python tools/repo_hygiene.py check-json
+        entry: uv run --locked forge-hygiene check-json
         language: system
         types: [json]
 
       - id: debug-statements
         name: check for debug statements
-        entry: uv run python tools/repo_hygiene.py debug-statements
+        entry: uv run --locked forge-hygiene debug-statements
         language: system
         types: [python]
 
       - id: detect-private-key
         name: detect private keys
-        entry: uv run python tools/repo_hygiene.py detect-private-key
+        entry: uv run --locked forge-hygiene detect-private-key
         language: system
         types: [text]
+
+      - id: no-todo
+        name: reject TODO comments and files (track work in issues)
+        entry: uv run --locked forge-todo-gate
+        language: system
+        types: [text]
+
+      - id: tests-and-diff-coverage
+        name: tests under coverage + diff-cover (>=90% on changed lines)
+        entry: uv run --locked forge-coverage-gate
+        language: system
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        stages: [pre-push]
+        args: [--python]
 
   # Fast, every-commit gates: format then lint then types.
   - repo: local
     hooks:
       - id: ruff-format
         name: ruff format
-        entry: uv run ruff format --force-exclude
+        entry: uv run --locked ruff format --force-exclude
         language: system
         types_or: [python, pyi]
         require_serial: true
 
       - id: ruff-check
         name: ruff check
-        entry: uv run ruff check --force-exclude --fix
+        entry: uv run --locked ruff check --force-exclude --fix
         language: system
         types_or: [python, pyi]
         require_serial: true
@@ -99,19 +112,8 @@ repos:
       # resolution), so filenames are not passed. Fast on a warm cache.
       - id: mypy
         name: mypy
-        entry: uv run mypy .
+        entry: uv run --locked mypy .
         language: system
         types_or: [python, pyi]
         pass_filenames: false
-        require_serial: true
-
-  # Slow gates: only on push.
-  - repo: local
-    hooks:
-      - id: tests-and-diff-coverage
-        name: pytest + diff-cover (>=90% on changed lines)
-        entry: bash tools/coverage_gate.sh
-        language: system
-        pass_filenames: false
-        stages: [pre-push]
         require_serial: true
