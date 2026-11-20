@@ -77,12 +77,18 @@ jobs:
         os: ${{ fromJSON(inputs.os) }}
     runs-on: ${{ matrix.os }}
     steps:
+      # SKIP, FORGE_* and DIFF_COVER_* steer the gates themselves, so callers cannot set them.
       - &export-env
         name: Export the project's environment
         if: inputs.env != ''
         env:
           PROJECT_ENV: ${{ inputs.env }}
-        run: printf '%s\n' "$PROJECT_ENV" >> "$GITHUB_ENV"
+        run: |
+          if printf '%s\n' "$PROJECT_ENV" | grep -Eq '^[[:space:]]*(SKIP|FORGE_[A-Za-z0-9_]*|DIFF_COVER_[A-Za-z0-9_]*)='; then
+            echo "::error::the env input may not set SKIP, FORGE_* or DIFF_COVER_*"
+            exit 1
+          fi
+          printf '%s\n' "$PROJECT_ENV" >> "$GITHUB_ENV"
       - name: Free runner disk space
         if: inputs.free-disk-space && runner.os == 'Linux'
         run: |
@@ -97,15 +103,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - &forge-access
-        name: Let pre-commit fetch forge
-        env:
-          FORGE_TOKEN: ${{ secrets.forge-token }}
-        run: |
-          if [[ -n $FORGE_TOKEN ]]; then
-            git config --global url."https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge".insteadOf https://github.com/poipoi300/forge
-          fi
-      - name: Install apt packages
+      - &apt-packages
+        name: Install apt packages
         if: runner.os == 'Linux' && inputs.apt-packages != ''
         env:
           PACKAGES: ${{ inputs.apt-packages }}
@@ -120,7 +119,8 @@ jobs:
         env:
           PACKAGES: ${{ inputs.choco-packages }}
         run: choco install -y --no-progress $PACKAGES
-      - name: Install the pinned Rust toolchain
+      - &rust-toolchain
+        name: Install the pinned Rust toolchain
         if: inputs.rust
         run: |
           rustup toolchain install
@@ -139,6 +139,20 @@ jobs:
       - &sync
         name: Install the project's gate tools
         run: uv sync --locked
+      # The token lives only in this step's environment, while pre-commit clones
+      # the pinned hooks into its cache; no project code runs here.
+      - &fetch-hooks
+        name: Fetch the pinned hooks
+        env:
+          FORGE_TOKEN: ${{ secrets.forge-token }}
+        run: |
+          if [[ -n $FORGE_TOKEN ]]; then
+            export GIT_CONFIG_COUNT=1
+            export GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf"
+            export GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge
+          fi
+          unset FORGE_TOKEN
+          uv run --locked pre-commit install-hooks
       - name: Commit stage
         run: uv run --locked pre-commit run --hook-stage pre-commit --all-files
       - name: Push stage, before coverage
@@ -152,9 +166,10 @@ jobs:
         run: |
           rm -rf $PATHS
           df -h .
+      # Each artifact holds one lane directory, so the merged download has one per lane.
       - name: Collect this platform's coverage
         env:
-          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage
+          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage/lane-${{ strategy.job-index }}
         run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -169,12 +184,16 @@ jobs:
       - *export-env
       - *keep-line-endings
       - *checkout
-      - *forge-access
+      # The project's install may build native code, as on the lanes.
+      - *apt-packages
+      - *rust-toolchain
       - *setup-uv
       - *sync
+      - *fetch-hooks
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: forge-coverage-*
+          merge-multiple: true
           path: ${{ runner.temp }}/forge-coverage
       # A pull request compares with its base; a push to the default branch
       # compares its two tips, which survives a force push; any other push

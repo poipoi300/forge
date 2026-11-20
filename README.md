@@ -88,13 +88,29 @@ the commit stage and the push stage on its platform; the coverage hook
 collects that platform's reports, and a final job merges every lane's
 reports, so a line counts as covered when any platform runs it.
 
+The coverage hook needs coverage.py to record repository-relative paths and
+to know the project's first-party code, so lanes merge and a module no test
+imports still counts. It refuses to run without both:
+
+```toml
+[tool.coverage.run]
+relative_files = true
+source = ["src"]
+```
+
+Locally the hook tests the checked-out tree, so it refuses a push of any
+other ref; push from a checkout of what you push. Call `gates.yml` once per
+workflow run: its artifact names are per run.
+
 While forge is private, two grants are needed:
 
 - forge's Actions access level lets the owner's other repositories call
   `gates.yml` (Settings → Actions → Access).
 - pre-commit clones forge at the pinned commit. Locally it uses your git
   credentials. In CI, pass a read-only token for this repository as the
-  `forge-token` secret.
+  `forge-token` secret; only the step that fetches the pinned hooks sees it.
+  GitHub withholds secrets from runs for pull requests from forks and from
+  Dependabot, so those runs cannot fetch forge until it is public.
 
 ## Setup
 
