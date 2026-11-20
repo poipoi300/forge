@@ -34,7 +34,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "switch", "-qc", "feature")
     monkeypatch.chdir(root)
     monkeypatch.setenv("DIFF_COVER_COMPARE_BRANCH", "main")
-    for name in ("FORGE_COVERAGE_COLLECT", "FORGE_COVERAGE_REPORTS", "FORGE_DIFF_RANGE_NOTATION"):
+    for name in ("FORGE_COVERAGE_COLLECT", "FORGE_COVERAGE_REPORTS", "FORGE_DIFF_RANGE_NOTATION", "PRE_COMMIT_TO_REF"):
         monkeypatch.delenv(name, raising=False)
     # Project tools come from this interpreter rather than a uv project.
     tools = Path(sys.executable).parent
@@ -42,8 +42,10 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def write_python_project(repo: Path, *, tested: tuple[str, ...]) -> None:
-    (repo / "pyproject.toml").write_text("[tool.coverage.run]\nrelative_files = true\nbranch = true\n")
+def write_python_project(repo: Path, *, tested: tuple[str, ...], extra_config: str = "") -> None:
+    (repo / "pyproject.toml").write_text(
+        f'[tool.coverage.run]\nrelative_files = true\nbranch = true\nsource = ["."]\n{extra_config}'
+    )
     (repo / "app.py").write_text(
         textwrap.dedent(
             """\
@@ -92,6 +94,72 @@ def test_python_lanes_merge_so_a_line_covered_on_any_platform_counts(
     assert coverage.main(["--python"]) == 0
     shutil.rmtree(reports / "windows")
     assert coverage.main(["--python"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ('[tool.coverage.run]\nsource = ["."]\n', "relative_files = true"),
+        ("[tool.coverage.run]\nrelative_files = true\n", "source = [<first-party code>]"),
+    ],
+)
+def test_python_collection_requires_portable_and_complete_measurement(
+    repo: Path, capsys: pytest.CaptureFixture[str], config: str, message: str
+) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    (repo / "pyproject.toml").write_text(config)
+    commit_all(repo, "add app")
+    with pytest.raises(SystemExit) as exit_info:
+        coverage.main(["--python"])
+    assert message in str(exit_info.value.code)
+
+
+def test_a_changed_module_no_test_imports_fails_the_gate(repo: Path) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    (repo / "extra.py").write_text("".join(f"VALUE_{n} = {n}\n" for n in range(12)))
+    commit_all(repo, "add an untested module")
+    assert coverage.main(["--python"]) == 1
+
+
+def test_lanes_collected_in_other_checkouts_merge(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    commit_all(repo, "add app")
+    other = tmp_path / "other-checkout"
+    git(tmp_path, "clone", "-q", str(repo), str(other))
+    monkeypatch.chdir(other)
+    monkeypatch.setenv("FORGE_COVERAGE_COLLECT", str(tmp_path / "reports" / "lane"))
+    assert coverage.main(["--python"]) == 0
+    monkeypatch.chdir(repo)
+    monkeypatch.delenv("FORGE_COVERAGE_COLLECT")
+    monkeypatch.setenv("FORGE_COVERAGE_REPORTS", str(tmp_path / "reports"))
+    assert coverage.main(["--python"]) == 0
+
+
+def test_parallel_mode_shards_become_one_lane_report(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_python_project(repo, tested=("linux", "windows"), extra_config="parallel = true\n")
+    commit_all(repo, "add app")
+    lane = tmp_path / "reports" / "lane"
+    monkeypatch.setenv("FORGE_COVERAGE_COLLECT", str(lane))
+    assert coverage.main(["--python"]) == 0
+    assert [path.name for path in lane.iterdir()] == ["python.coverage"]
+    monkeypatch.delenv("FORGE_COVERAGE_COLLECT")
+    monkeypatch.setenv("FORGE_COVERAGE_REPORTS", str(tmp_path / "reports"))
+    assert coverage.main(["--python"]) == 0
+
+
+def test_a_push_of_another_ref_is_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    commit_all(repo, "add app")
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", "main")
+    with pytest.raises(SystemExit):
+        coverage.main(["--python"])
+    assert "not the checked-out HEAD" in capsys.readouterr().err
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", "feature")
+    assert coverage.main(["--python"]) == 0
 
 
 def test_rust_lanes_merge_platform_only_lines_under_repository_paths(

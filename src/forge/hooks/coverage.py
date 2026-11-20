@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -37,10 +38,28 @@ def project_tool(*argv: str) -> list[str]:
     return ["uv", "run", "--locked", *argv]
 
 
-def _run(argv: Sequence[str]) -> int:
+def _env() -> dict[str, str]:
     # pre-commit activates the hook's own virtualenv; the project's tools run in the project's.
-    env = {name: value for name, value in os.environ.items() if name != "VIRTUAL_ENV"}
-    return subprocess.run(argv, env=env, check=False).returncode
+    return {name: value for name, value in os.environ.items() if name != "VIRTUAL_ENV"}
+
+
+def _run(argv: Sequence[str]) -> int:
+    return subprocess.run(argv, env=_env(), check=False).returncode
+
+
+def _require_portable_python_config() -> None:
+    """Fail unless coverage.py records repository-relative paths and measures first-party code."""
+    report = subprocess.run(
+        project_tool("coverage", "debug", "config"), env=_env(), capture_output=True, text=True, check=True
+    ).stdout
+    settings = dict(re.findall(r"^\s*(\w+): (.*)$", report, re.MULTILINE))
+    missing = []
+    if settings.get("relative_files") != "True":
+        missing.append("relative_files = true, so lanes from other checkouts and platforms merge")
+    if all(settings.get(key, "None") in {"None", "-none-"} for key in ("source", "source_pkgs", "source_dirs")):
+        missing.append("source = [<first-party code>], so a module no test imports still counts as uncovered")
+    if missing:
+        raise SystemExit(f"forge-coverage-gate: set coverage.py's [run] {'; '.join(missing)}")
 
 
 def _check(argv: Sequence[str]) -> None:
@@ -52,7 +71,12 @@ def collect(languages: Iterable[str], out: Path) -> None:
     """Run each language's tests under coverage, writing this platform's reports into `out`."""
     out.mkdir(parents=True, exist_ok=True)
     if "python" in languages:
-        _check(project_tool("coverage", "run", f"--data-file={out / PYTHON_DATA}", "-m", "pytest"))
+        _require_portable_python_config()
+        data = out / PYTHON_DATA
+        _check(project_tool("coverage", "run", f"--data-file={data}", "-m", "pytest"))
+        # `parallel = true` writes suffixed shards; each lane publishes one data file.
+        if shards := sorted(out.glob(f"{PYTHON_DATA}.*")):
+            _check(project_tool("coverage", "combine", f"--data-file={data}", *(str(shard) for shard in shards)))
     if "rust" in languages:
         rust = out / RUST_DIR
         rust.mkdir(exist_ok=True)
@@ -156,6 +180,19 @@ def gate(
     return failed
 
 
+def _require_pushing_head(parser: argparse.ArgumentParser) -> None:
+    # The gate tests the working tree, so a pre-push for another ref would test the wrong code.
+    pushed = os.environ.get("PRE_COMMIT_TO_REF")
+    if not pushed:
+        return
+    head, target = (
+        subprocess.check_output(["git", "rev-parse", f"{ref}^{{commit}}"], text=True).strip()
+        for ref in ("HEAD", pushed)
+    )
+    if head != target:
+        parser.error(f"the push sends {target}, not the checked-out HEAD {head}; push from a checkout of it")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Collect, gate, or both, as the environment selects."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -191,6 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not lanes:
                 parser.error(f"no lane reports under {reports_dir}")
         else:
+            _require_pushing_head(parser)
             lanes = [work / "local"]
             collect(languages, lanes[0])
         return gate(languages, lanes, work, fail_under=args.fail_under, excludes=excludes)
