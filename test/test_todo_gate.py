@@ -7,7 +7,7 @@ import pytest
 from forge.hooks import todo
 
 WORDS = ["TODO", "FIXME", "XXX", "HACK"]
-LEADERS = ["#", "//", "/*", "<!--", " *", "--", ";", "%", "x = 1  #", "call(); //"]
+LEADERS = ["#", "//", "/*", "<!--", "--", ";", "%", "x = 1  #", "call(); //", 'say("#"); //']
 
 
 def check(tmp_path: Path, name: str, text: str, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
@@ -76,6 +76,39 @@ def test_accepts_files_that_only_contain_the_word(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
 ) -> None:
     assert check(tmp_path, name, "fine\n", capsys) == (0, "")
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("/*\n  {word}: drop the fallback\n*/\n", 2),
+        ("/**\n * Parses input.\n * {word}\n */\n", 3),
+        ("<!--\n{word}: rewrite\n-->\n", 2),
+        ("let x = 1; /* {word} */ let y = 2;\n", 1),
+    ],
+)
+def test_rejects_markers_anywhere_in_a_block_comment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str, line: int
+) -> None:
+    status, out = check(tmp_path, "block.rs", text.format(word=WORDS[0]), capsys)
+    assert status == 1
+    assert out.startswith(f"{tmp_path / 'block.rs'}:{line}: {WORDS[0]} comment")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'url = "https://example.com/docs#{word}"\n',
+        'let path = "a//{word}";\n',
+        '/* sized */ let label = "{word}";\n',
+        "/* one */ value = {word}_LIMIT; /* two */\n",
+        'let open = "/* not a comment";\nlet label = "{word}";\n',
+    ],
+)
+def test_accepts_markers_in_strings_and_code_outside_comments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str
+) -> None:
+    assert check(tmp_path, "code.rs", text.format(word=WORDS[0]), capsys) == (0, "")
 
 
 def test_reports_every_offence_in_one_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
