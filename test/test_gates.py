@@ -1,5 +1,7 @@
 """The gate registry, the published hooks, forge's own hooks and the CI workflows agree."""
 
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -138,19 +140,99 @@ def test_the_forge_token_is_scoped_to_fetching_the_pinned_hooks() -> None:
         steps = job["steps"]
         holders = [step for step in steps if "secrets." in str(step)]
         assert [step["name"] for step in holders] == ["Fetch the pinned hooks"]
-        assert "git config --global" not in holders[0]["run"]
+        script = holders[0]["run"]
+        assert "git config --global" not in script
+        # Only the forge-only config's install sees the credential.
+        assert script.count("GIT_CONFIG_KEY_0") == 1
+        assert 'install-hooks --config "$forge_only"' in script
         fetch = steps.index(holders[0])
         assert all("pre-commit run" not in step.get("run", "") for step in steps[:fetch])
 
 
-def test_callers_cannot_set_the_variables_that_steer_the_gates() -> None:
-    export = next(
-        s
-        for s in load_workflow("gates.yml")["jobs"]["lane"]["steps"]
-        if s.get("name") == "Export the project's environment"
+def step_script(job: str, name: str) -> str:
+    step = next(s for s in load_workflow("gates.yml")["jobs"][job]["steps"] if s.get("name") == name)
+    script: str = step["run"]
+    return script
+
+
+def run_step(tmp_path: Path, script: str, env: dict[str, str]) -> tuple[int, dict[str, str], str]:
+    github_env = tmp_path / "github_env"
+    github_env.write_text("")
+    result = subprocess.run(
+        ["bash", "-e", "-c", script],
+        cwd=tmp_path,
+        env={**os.environ, **env, "GITHUB_ENV": str(github_env)},
+        capture_output=True,
+        text=True,
     )
-    assert "SKIP|FORGE_[A-Za-z0-9_]*|DIFF_COVER_[A-Za-z0-9_]*" in export["run"]
-    assert export["run"].index("exit 1") < export["run"].index('>> "$GITHUB_ENV"')
+    exported = dict(line.split("=", 1) for line in github_env.read_text().splitlines())
+    return result.returncode, exported, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("project_env", "exported"),
+    [
+        ("CARGO_INCREMENTAL=0\nRUSTFLAGS=-D warnings\n", {"CARGO_INCREMENTAL": "0", "RUSTFLAGS": "-D warnings"}),
+        ("SKIP=no-todo\n", None),
+        ("skip=no-todo\n", None),
+        ("Forge_Coverage_Collect=/tmp/x\n", None),
+        ("DIFF_COVER_COMPARE_BRANCH=HEAD\n", None),
+        ("NOTES<<EOF\nSKIP=no-todo\nEOF\n", None),
+    ],
+)
+def test_callers_cannot_set_the_variables_that_steer_the_gates(
+    tmp_path: Path, project_env: str, exported: dict[str, str] | None
+) -> None:
+    status, written, _ = run_step(
+        tmp_path, step_script("lane", "Export the project's environment"), {"PROJECT_ENV": project_env}
+    )
+    if exported is None:
+        assert status == 1 and written == {}
+    else:
+        assert status == 0 and written == exported
+
+
+def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
+    script = step_script("coverage", "Check every lane sent its reports")
+    (tmp_path / "lane-0").mkdir()
+    env = {"OS": '["ubuntu-24.04", "windows-2025"]', "REPORTS": str(tmp_path)}
+    assert run_step(tmp_path, script, env)[0] == 1
+    (tmp_path / "lane-1").mkdir()
+    assert run_step(tmp_path, script, env)[0] == 0
+
+
+@pytest.fixture
+def pushed_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (["init", "-q", "-b", "main"], ["commit", "-q", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", "-c", "user.email=t@e.org", "-c", "user.name=T", *args], cwd=repo, check=True)
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True)
+    return repo
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        ({"EVENT": "pull_request", "PR_BASE": "HEAD"}, ("HEAD", "...")),
+        ({"EVENT": "push", "REF": "refs/heads/main", "BEFORE": "HEAD"}, ("HEAD", "..")),
+        ({"EVENT": "push", "REF": "refs/heads/main", "BEFORE": "0" * 40}, ("EMPTY_TREE", "..")),
+        ({"EVENT": "push", "REF": "refs/heads/topic", "BEFORE": "HEAD"}, ("origin/main", "...")),
+    ],
+)
+def test_the_coverage_base_follows_the_event(
+    pushed_repo: Path, event: dict[str, str], expected: tuple[str, str]
+) -> None:
+    script = step_script("coverage", "Choose the coverage base")
+    env = {"PR_BASE": "", "BEFORE": "", "REF": "", "DEFAULT_BRANCH": "main", **event}
+    status, written, _ = run_step(pushed_repo, script, env)
+    empty_tree = subprocess.check_output(["git", "hash-object", "-t", "tree", "/dev/null"], text=True).strip()
+    base, notation = expected
+    assert status == 0
+    assert written == {
+        "DIFF_COVER_COMPARE_BRANCH": base.replace("EMPTY_TREE", empty_tree),
+        "FORGE_DIFF_RANGE_NOTATION": notation,
+    }
 
 
 def test_the_merge_job_installs_what_the_project_install_needs() -> None:

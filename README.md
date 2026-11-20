@@ -99,7 +99,9 @@ source = ["src"]
 ```
 
 Locally the hook tests the checked-out tree, so it refuses a push of any
-other ref; push from a checkout of what you push. Call `gates.yml` once per
+other ref or with staged changes; push from a clean checkout of what you
+push. pre-commit hands a pre-push hook only the first ref of a multi-ref
+push, so push one ref at a time. Call `gates.yml` once per
 workflow run: its artifact names are per run.
 
 While forge is private, two grants are needed:

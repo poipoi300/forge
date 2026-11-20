@@ -83,12 +83,23 @@ jobs:
         if: inputs.env != ''
         env:
           PROJECT_ENV: ${{ inputs.env }}
+        # One KEY=VALUE per line; names compare case-insensitively, as Windows does.
         run: |
-          if printf '%s\n' "$PROJECT_ENV" | grep -Eq '^[[:space:]]*(SKIP|FORGE_[A-Za-z0-9_]*|DIFF_COVER_[A-Za-z0-9_]*)='; then
-            echo "::error::the env input may not set SKIP, FORGE_* or DIFF_COVER_*"
-            exit 1
-          fi
-          printf '%s\n' "$PROJECT_ENV" >> "$GITHUB_ENV"
+          while IFS= read -r line || [[ -n $line ]]; do
+            [[ -z ${line//[[:space:]]/} ]] && continue
+            if [[ ! $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::env input lines must be KEY=VALUE: $line"
+              exit 1
+            fi
+            name=$(printf '%s' "${line%%=*}" | tr '[:lower:]' '[:upper:]')
+            case $name in
+              SKIP | FORGE_* | DIFF_COVER_*)
+                echo "::error::the env input may not set $name"
+                exit 1
+                ;;
+            esac
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+          done <<< "$PROJECT_ENV"
       - name: Free runner disk space
         if: inputs.free-disk-space && runner.os == 'Linux'
         run: |
@@ -139,20 +150,36 @@ jobs:
       - &sync
         name: Install the project's gate tools
         run: uv sync --locked
-      # The token lives only in this step's environment, while pre-commit clones
-      # the pinned hooks into its cache; no project code runs here.
+      # The token reaches one command: pre-commit installing forge's own hooks,
+      # by id only, from a config holding just the forge entries. pre-commit
+      # caches that clone, so the project's hooks later install without it.
       - &fetch-hooks
         name: Fetch the pinned hooks
         env:
           FORGE_TOKEN: ${{ secrets.forge-token }}
         run: |
-          if [[ -n $FORGE_TOKEN ]]; then
-            export GIT_CONFIG_COUNT=1
-            export GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf"
-            export GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge
-          fi
+          forge_only=$RUNNER_TEMP/forge-hooks.yaml
+          uv run --locked python - "$forge_only" <<'EOF'
+          import sys
+          import yaml
+          config = yaml.safe_load(open(".pre-commit-config.yaml", encoding="utf-8"))
+          forge = [
+              {"repo": repo["repo"], "rev": repo["rev"], "hooks": [{"id": hook["id"]} for hook in repo["hooks"]]}
+              for repo in config["repos"]
+              if repo["repo"].lower().removesuffix(".git").rstrip("/") == "https://github.com/poipoi300/forge"
+          ]
+          yaml.safe_dump({"repos": forge}, open(sys.argv[1], "w", encoding="utf-8"))
+          EOF
+          token=$FORGE_TOKEN
           unset FORGE_TOKEN
-          uv run --locked pre-commit install-hooks
+          if [[ -n $token ]]; then
+            GIT_CONFIG_COUNT=1 \
+              GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/poipoi300/forge.insteadOf" \
+              GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge \
+              uv run --locked pre-commit install-hooks --config "$forge_only"
+          else
+            uv run --locked pre-commit install-hooks --config "$forge_only"
+          fi
       - name: Commit stage
         run: uv run --locked pre-commit run --hook-stage pre-commit --all-files
       - name: Push stage, before coverage
@@ -195,9 +222,23 @@ jobs:
           pattern: forge-coverage-*
           merge-multiple: true
           path: ${{ runner.temp }}/forge-coverage
+      # A failed rerun can reuse a lane whose artifact expired; gate only a full set.
+      - name: Check every lane sent its reports
+        env:
+          OS: ${{ inputs.os }}
+          REPORTS: ${{ runner.temp }}/forge-coverage
+        run: |
+          lanes=$(jq length <<< "$OS")
+          for ((lane = 0; lane < lanes; lane++)); do
+            if [[ ! -d $REPORTS/lane-$lane ]]; then
+              echo "::error::lane $lane sent no coverage reports"
+              exit 1
+            fi
+          done
       # A pull request compares with its base; a push to the default branch
-      # compares its two tips, which survives a force push; any other push
-      # compares with the default branch.
+      # compares its two tips, which survives a force push, and the first push
+      # compares with the empty tree; any other push compares with the default
+      # branch.
       - name: Choose the coverage base
         env:
           EVENT: ${{ github.event_name }}
@@ -209,12 +250,14 @@ jobs:
         run: |
           if [[ -n $PR_BASE ]]; then
             base=$PR_BASE notation=...
-          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" && ! $BEFORE =~ ^0+$ ]]; then
+          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" && $BEFORE =~ ^0+$ ]]; then
+            base=$(git hash-object -t tree /dev/null) notation=..
+          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" ]]; then
             base=$BEFORE notation=..
           else
             base=origin/$DEFAULT_BRANCH notation=...
           fi
-          if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+          if ! git cat-file -e "$base"; then
             git -c 'credential.helper=!gh auth git-credential' fetch --no-tags origin "${base#origin/}"
           fi
           {
