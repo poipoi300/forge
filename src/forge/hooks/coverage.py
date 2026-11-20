@@ -43,8 +43,8 @@ def _env() -> dict[str, str]:
     return {name: value for name, value in os.environ.items() if name != "VIRTUAL_ENV"}
 
 
-def _run(argv: Sequence[str]) -> int:
-    return subprocess.run(argv, env=_env(), check=False).returncode
+def _run(argv: Sequence[str], **env: str) -> int:
+    return subprocess.run(argv, env={**_env(), **env}, check=False).returncode
 
 
 def _require_portable_python_config() -> None:
@@ -58,12 +58,14 @@ def _require_portable_python_config() -> None:
         missing.append("relative_files = true, so lanes from other checkouts and platforms merge")
     if all(settings.get(key, "None") in {"None", "-none-"} for key in ("source", "source_pkgs", "source_dirs")):
         missing.append("source = [<first-party code>], so a module no test imports still counts as uncovered")
+    if settings.get("include_namespace_packages") != "True":
+        missing.append("include_namespace_packages = true (under [report]), so source dirs without __init__.py count")
     if missing:
         raise SystemExit(f"forge-coverage-gate: set coverage.py's [run] {'; '.join(missing)}")
 
 
-def _check(argv: Sequence[str]) -> None:
-    if status := _run(argv):
+def _check(argv: Sequence[str], **env: str) -> None:
+    if status := _run(argv, **env):
         raise SystemExit(status)
 
 
@@ -72,8 +74,9 @@ def collect(languages: Iterable[str], out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     if "python" in languages:
         _require_portable_python_config()
-        data = out / PYTHON_DATA
-        _check(project_tool("coverage", "run", f"--data-file={data}", "-m", "pytest"))
+        data = (out / PYTHON_DATA).resolve()
+        # COVERAGE_FILE, unlike --data-file, also reaches the subprocesses coverage.py measures.
+        _check(project_tool("coverage", "run", "-m", "pytest"), COVERAGE_FILE=str(data))
         # `parallel = true` writes suffixed shards; each lane publishes one data file.
         if shards := sorted(out.glob(f"{PYTHON_DATA}.*")):
             _check(project_tool("coverage", "combine", f"--data-file={data}", *(str(shard) for shard in shards)))
@@ -139,8 +142,9 @@ def _rust_report(lanes: Sequence[Path], work: Path) -> Path:
     return merged
 
 
-def _ensure_commit(ref: str) -> None:
-    if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True).returncode:
+def _ensure_base(ref: str) -> None:
+    # A commit, or the empty tree that an initial push compares against.
+    if subprocess.run(["git", "cat-file", "-e", ref], capture_output=True).returncode:
         _check(["git", "fetch", "--quiet", "origin", ref.removeprefix("origin/")])
 
 
@@ -162,7 +166,7 @@ def gate(
     """Merge the lanes' reports per language and hold each to `fail_under` on changed lines."""
     compare = os.environ.get("DIFF_COVER_COMPARE_BRANCH", "origin/main")
     notation = os.environ.get("FORGE_DIFF_RANGE_NOTATION", "...")
-    _ensure_commit(compare)
+    _ensure_base(compare)
     builders = {"python": _python_report, "rust": _rust_report}
     failed = 0
     for language in languages:
@@ -191,6 +195,8 @@ def _require_pushing_head(parser: argparse.ArgumentParser) -> None:
     )
     if head != target:
         parser.error(f"the push sends {target}, not the checked-out HEAD {head}; push from a checkout of it")
+    if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode:
+        parser.error("staged changes are not in the pushed commit; commit or unstage them before pushing")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

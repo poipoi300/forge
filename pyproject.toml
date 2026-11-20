@@ -74,3 +74,6 @@ exclude = ['^\.venv/']
 branch = true
 relative_files = true
 source = ["src"]
+
+[tool.coverage.report]
+include_namespace_packages = true

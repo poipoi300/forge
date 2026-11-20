@@ -44,7 +44,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def write_python_project(repo: Path, *, tested: tuple[str, ...], extra_config: str = "") -> None:
     (repo / "pyproject.toml").write_text(
-        f'[tool.coverage.run]\nrelative_files = true\nbranch = true\nsource = ["."]\n{extra_config}'
+        '[tool.coverage.run]\nrelative_files = true\nbranch = true\nsource = ["."]\n'
+        f"{extra_config}\n[tool.coverage.report]\ninclude_namespace_packages = true\n"
     )
     (repo / "app.py").write_text(
         textwrap.dedent(
@@ -99,8 +100,15 @@ def test_python_lanes_merge_so_a_line_covered_on_any_platform_counts(
 @pytest.mark.parametrize(
     ("config", "message"),
     [
-        ('[tool.coverage.run]\nsource = ["."]\n', "relative_files = true"),
-        ("[tool.coverage.run]\nrelative_files = true\n", "source = [<first-party code>]"),
+        (
+            '[tool.coverage.run]\nsource = ["."]\n[tool.coverage.report]\ninclude_namespace_packages = true\n',
+            "relative_files = true",
+        ),
+        (
+            "[tool.coverage.run]\nrelative_files = true\n[tool.coverage.report]\ninclude_namespace_packages = true\n",
+            "source = [<first-party code>]",
+        ),
+        ('[tool.coverage.run]\nrelative_files = true\nsource = ["."]\n', "include_namespace_packages = true"),
     ],
 )
 def test_python_collection_requires_portable_and_complete_measurement(
@@ -147,6 +155,49 @@ def test_parallel_mode_shards_become_one_lane_report(
     monkeypatch.delenv("FORGE_COVERAGE_COLLECT")
     monkeypatch.setenv("FORGE_COVERAGE_REPORTS", str(tmp_path / "reports"))
     assert coverage.main(["--python"]) == 0
+
+
+def test_an_untested_module_in_a_namespace_package_fails_the_gate(repo: Path) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "extra.py").write_text("".join(f"VALUE_{n} = {n}\n" for n in range(12)))
+    commit_all(repo, "add an untested namespace module")
+    assert coverage.main(["--python"]) == 1
+
+
+def test_spawned_worker_coverage_lands_in_the_lane_report(repo: Path) -> None:
+    write_python_project(repo, tested=("linux",), extra_config='parallel = true\nconcurrency = ["multiprocessing"]\n')
+    (repo / "test_app.py").write_text(
+        "import multiprocessing\n\nimport app\n\n\n"
+        "def test_app():\n    app.linux()\n"
+        "    worker = multiprocessing.get_context('spawn').Process(target=app.windows)\n"
+        "    worker.start()\n    worker.join()\n    assert worker.exitcode == 0\n"
+    )
+    commit_all(repo, "cover windows in a worker")
+    assert coverage.main(["--python"]) == 0
+    assert not list(repo.glob(".coverage*")), "no shard lands in the checkout"
+
+
+def test_staged_changes_block_a_push(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    commit_all(repo, "add app")
+    (repo / "app.py").write_text("def linux():\n    return 1\n")
+    git(repo, "add", "app.py")
+    monkeypatch.setenv("PRE_COMMIT_TO_REF", "feature")
+    with pytest.raises(SystemExit):
+        coverage.main(["--python"])
+    assert "staged changes are not in the pushed commit" in capsys.readouterr().err
+
+
+def test_an_initial_push_compares_with_the_empty_tree(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_python_project(repo, tested=("linux",))
+    commit_all(repo, "half covered")
+    empty_tree = subprocess.check_output(["git", "hash-object", "-t", "tree", "/dev/null"], text=True).strip()
+    monkeypatch.setenv("DIFF_COVER_COMPARE_BRANCH", empty_tree)
+    monkeypatch.setenv("FORGE_DIFF_RANGE_NOTATION", "..")
+    assert coverage.main(["--python"]) == 1
 
 
 def test_a_push_of_another_ref_is_refused(
