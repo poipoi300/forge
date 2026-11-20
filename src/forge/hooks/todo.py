@@ -20,7 +20,8 @@ MARKERS = ("TODO", "FIXME", "XXX", "HACK")
 _LEADER = r"(?:\#|//|/\*|<!--|^[ \t]*[*;%]|(?:^|[ \t])--)"
 _MARKER = re.compile(rf"{_LEADER}[^\n]*?\b({'|'.join(MARKERS)})\b", re.MULTILINE)
 _REMEDY = "file an issue and link it from a comment that states the constraint"
-_TRACKING_FILE = re.compile(r"(?:todos?|fixme)(?:\.[^.]+)?", re.IGNORECASE)
+# A list of work is a prose document; `todo.py` is code about todos.
+_TRACKING_FILE = re.compile(r"(?:todos?|fixme)(?:\.(?:md|markdown|txt|org|rst|adoc))?", re.IGNORECASE)
 
 
 def offences(path: Path) -> list[str]:

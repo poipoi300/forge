@@ -58,14 +58,20 @@ def test_accepts_comments_and_prose_without_a_marker(
     assert check(tmp_path, "notes.md", text.format(word=WORDS[0]), capsys) == (0, "")
 
 
-@pytest.mark.parametrize("name", ["TODO", "TODO.md", "docs/todo.txt", "Todos.org", "notes/FIXME.md"])
+@pytest.mark.parametrize(
+    "name",
+    ["TODO", "TODO.md", "docs/todo.txt", "Todos.org", "notes/FIXME.md", "TODO.rst", "todo.markdown", "TODO.adoc"],
+)
 def test_rejects_work_tracking_files(tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str) -> None:
     status, out = check(tmp_path, name, "nothing to see\n", capsys)
     assert status == 1
     assert out == f"{tmp_path / name}: work-tracking file; track the work in issues\n"
 
 
-@pytest.mark.parametrize("name", ["todo_view.py", "mastodon.md", "src/hackathon.rs", "TODOLIST_SPEC.md"])
+@pytest.mark.parametrize(
+    "name",
+    ["todo.py", "src/todos.rs", "fixme.ts", "todo_view.py", "mastodon.md", "src/hackathon.rs", "TODOLIST_SPEC.md"],
+)
 def test_accepts_files_that_only_contain_the_word(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str
 ) -> None:
