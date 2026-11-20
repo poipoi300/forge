@@ -179,7 +179,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--max-kb", type=int, default=2048)
     parser.add_argument("paths", nargs="*")
-    args = parser.parse_args(argv)
+    # pre-commit appends file names after an entry's options; Python 3.12.3, on
+    # Ubuntu 24.04 runners, only accepts that order through intermixed parsing.
+    args = parser.parse_intermixed_args(argv)
 
     handlers = {
         "trailing-whitespace": lambda: trailing_whitespace(args.paths),
