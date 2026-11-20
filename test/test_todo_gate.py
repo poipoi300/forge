@@ -111,6 +111,37 @@ def test_accepts_markers_in_strings_and_code_outside_comments(
     assert check(tmp_path, "code.rs", text.format(word=WORDS[0]), capsys) == (0, "")
 
 
+@pytest.mark.parametrize(
+    ("name", "text", "line"),
+    [
+        ("escape.rs", 'let dir = "C:\\\\"; // {word}: handle drives\n', 1),
+        ("nested.rs", "/* outer /* inner */ still a comment {word} */\n", 1),
+        ("nested.rs", "/* outer /* inner */ */ fn f() {{}} // {word}\n", 1),
+        ("lib.py", 'text = "a"  # {word}: tidy\n', 1),
+    ],
+)
+def test_finds_markers_past_escapes_and_nested_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], name: str, text: str, line: int
+) -> None:
+    status, out = check(tmp_path, name, text.format(word=WORDS[0]), capsys)
+    assert status == 1
+    assert out.startswith(f"{tmp_path / name}:{line}: {WORDS[0]} comment")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "MARK = '# {word}'\n",
+        'HELP = """\nLines like // {word} are examples.\n"""\n',
+        'def f():\n    """Explain the # {word} convention."""\n',
+    ],
+)
+def test_python_strings_and_docstrings_are_not_comments(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str
+) -> None:
+    assert check(tmp_path, "lib.py", text.format(word=WORDS[0]), capsys) == (0, "")
+
+
 def test_reports_every_offence_in_one_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     text = "".join(f"# {word}\n" for word in WORDS)
     status, out = check(tmp_path, "TODO.md", text, capsys)
