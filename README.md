@@ -131,3 +131,7 @@ Run all gates manually:
 uv run --locked pre-commit run --all-files
 uv run --locked pre-commit run --hook-stage pre-push --all-files
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
