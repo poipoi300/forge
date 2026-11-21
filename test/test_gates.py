@@ -1,7 +1,6 @@
 """The gate registry, the published hooks, forge's own hooks and the CI workflows agree."""
 
 import os
-import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -135,26 +134,55 @@ def test_published_workflow_gates_the_merge_of_every_lane() -> None:
     }
 
 
-def test_the_forge_token_only_reaches_one_git_clone_before_any_project_code() -> None:
+def test_the_forge_token_only_reaches_a_git_only_step_before_any_project_code() -> None:
     gates = load_workflow("gates.yml")
     for job in gates["jobs"].values():
         steps = job["steps"]
         holders = [step for step in steps if "secrets." in str(step)]
         assert [step["name"] for step in holders] == ["Mirror forge for pre-commit"]
         script = holders[0]["run"]
-        assert script.startswith("declare +x token=$FORGE_TOKEN\nunset FORGE_TOKEN\n")
-        assert script.count("${token}") == 1
-        assert "git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge" in script
-        # The only other tool is uv reading the config outside the project, after the token is unexported.
-        assert re.findall(r"\buvx?\b.*", script) == [
-            "uv run --no-project --isolated --with pyyaml==6.0.3 python -I - <<'EOF'"
-        ]
-        assert "pre-commit run" not in script and "pre-commit install" not in script
-        # Only checkout and setup-uv run earlier, and neither runs project code; the caller's env comes after.
+        assert script.count("${FORGE_TOKEN}") == 1
+        assert "git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge forge.git" in script
+        # Nothing but git, grep and shell builtins runs where the token is.
+        commands = {
+            line.split()[0] for line in script.splitlines() if line.strip() and not line.strip().startswith("#")
+        }
+        assert commands <= {
+            "if",
+            "exit",
+            "fi",
+            "clone=(git",
+            "GIT_CONFIG_COUNT=1",
+            'GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf"',
+            "GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge",
+            '"${clone[@]}"',
+            "elif",
+            "echo",
+            "git",
+            "path=$(git",
+            "case",
+            "/*)",
+            "*)",
+            "esac",
+            "while",
+            "forge)",
+            "keep)",
+            "done",
+        }, commands
+        # Before it: the line-ending setting, checkout, setup-uv and the route step,
+        # which runs uv without the checkout's configuration; the caller's env comes after.
         before = [
             step.get("name") or step.get("uses", "").partition("@")[0] for step in steps[: steps.index(holders[0])]
         ]
-        assert before == ["Keep line endings as committed", "actions/checkout", "astral-sh/setup-uv"]
+        assert before == [
+            "Keep line endings as committed",
+            "actions/checkout",
+            "astral-sh/setup-uv",
+            "Route forge to a local mirror",
+        ]
+        routes = steps[steps.index(holders[0]) - 1]
+        assert routes["working-directory"] == "${{ runner.temp }}"
+        assert "uv run --no-config --no-project --isolated --with pyyaml==6.0.3 python -I -" in routes["run"]
         names = [step.get("name") for step in steps]
         assert names.index("Mirror forge for pre-commit") < names.index("Export the project's environment")
 
@@ -218,6 +246,7 @@ def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
 
 
 def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) -> None:
+    routes = step_script("lane", "Route forge to a local mirror")
     script = step_script("lane", "Mirror forge for pre-commit")
     real_git = subprocess.check_output(["bash", "-c", "command -v git"], text=True).strip()
     shim = tmp_path / "bin" / "git"
@@ -243,8 +272,15 @@ def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) ->
         "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
         "FORGE_TOKEN": "",
     }
-    status, _, output = run_step(tmp_path, script, env)
-    assert status == 0, output
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / ".pre-commit-config.yaml").rename(workspace / ".pre-commit-config.yaml")
+    env["GITHUB_WORKSPACE"] = str(workspace)
+    # A checkout's uv configuration must not reach the parser.
+    (workspace / "uv.toml").write_text("no-index = true\n")
+    for step in (routes, script):
+        status, _, output = run_step(tmp_path, step, env)
+        assert status == 0, output
 
     def rewritten(url: str) -> str:
         probe = tmp_path / "probe"
