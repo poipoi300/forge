@@ -145,10 +145,16 @@ def test_the_forge_token_only_reaches_one_git_clone_before_any_project_code() ->
         assert script.startswith("declare +x token=$FORGE_TOKEN\nunset FORGE_TOKEN\n")
         assert script.count("${token}") == 1
         assert "git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge" in script
-        assert not re.search(r"\buvx?\b|pre-commit (run|install)", script)
-        # Only the checkout runs earlier, and it runs no project code; the caller's env comes after.
-        before = [step.get("name") or step.get("uses", "") for step in steps[: steps.index(holders[0])]]
-        assert before == ["Keep line endings as committed", "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"]
+        # The only other tool is uv reading the config outside the project, after the token is unexported.
+        assert re.findall(r"\buvx?\b.*", script) == [
+            "uv run --no-project --isolated --with pyyaml==6.0.3 python -I - <<'EOF'"
+        ]
+        assert "pre-commit run" not in script and "pre-commit install" not in script
+        # Only checkout and setup-uv run earlier, and neither runs project code; the caller's env comes after.
+        before = [
+            step.get("name") or step.get("uses", "").partition("@")[0] for step in steps[: steps.index(holders[0])]
+        ]
+        assert before == ["Keep line endings as committed", "actions/checkout", "astral-sh/setup-uv"]
         names = [step.get("name") for step in steps]
         assert names.index("Mirror forge for pre-commit") < names.index("Export the project's environment")
 
@@ -196,6 +202,12 @@ def test_callers_cannot_set_the_variables_that_steer_the_gates(
         assert status == 0 and written == exported
 
 
+def test_the_merge_refuses_a_runner_listed_twice(tmp_path: Path) -> None:
+    script = step_script("coverage", "Check every lane sent its reports")
+    (tmp_path / "lane-ubuntu-24.04").mkdir()
+    assert run_step(tmp_path, script, {"OS": '["ubuntu-24.04", "ubuntu-24.04"]', "REPORTS": str(tmp_path)})[0] == 1
+
+
 def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
     script = step_script("coverage", "Check every lane sent its reports")
     (tmp_path / "lane-ubuntu-24.04").mkdir()
@@ -219,8 +231,10 @@ def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) ->
     (tmp_path / ".pre-commit-config.yaml").write_text(
         "repos:\n"
         "  - repo: https://github.com/poipoi300/forge.git\n    rev: x\n    hooks: []\n"
-        "  - repo: 'https://github.com/poipoi300/forge'\n    rev: x\n    hooks: []\n"
-        "  - repo: https://github.com/poipoi300/forge-extension\n    rev: x\n    hooks: []\n"
+        "  - \"repo\": 'https://github.com/poipoi300/forge'\n    rev: x\n    hooks: []\n"
+        "  - {repo: https://github.com/poipoi300/forge.git-extension, rev: x, hooks: []}\n"
+        "  - {repo: https://github.com/poipoi300/forge-extension, rev: x, hooks: []}\n"
+        "  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: x\n    hooks: []\n"
         "  - repo: local\n    hooks: []\n"
     )
     env = {
@@ -229,8 +243,8 @@ def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) ->
         "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
         "FORGE_TOKEN": "",
     }
-    status, _, _ = run_step(tmp_path, script, env)
-    assert status == 0
+    status, _, output = run_step(tmp_path, script, env)
+    assert status == 0, output
 
     def rewritten(url: str) -> str:
         probe = tmp_path / "probe"
@@ -245,7 +259,13 @@ def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) ->
     mirror = (tmp_path / "forge.git").resolve().as_posix()
     assert rewritten("https://github.com/poipoi300/forge.git") == f"file://{mirror}"
     assert rewritten("https://github.com/poipoi300/forge") == f"file://{mirror}"
-    assert rewritten("https://github.com/poipoi300/forge-extension") == "https://github.com/poipoi300/forge-extension"
+    for sibling in ("https://github.com/poipoi300/forge-extension", "https://github.com/poipoi300/forge.git-extension"):
+        assert rewritten(sibling) == sibling
+    # Repositories forge's URLs do not prefix get no rule, so a runner's own routing still applies.
+    rules = subprocess.check_output(
+        ["git", "config", "--global", "--get-regexp", r"^url\."], text=True, env={**os.environ, **env}
+    )
+    assert "pre-commit-hooks" not in rules
 
 
 @pytest.fixture

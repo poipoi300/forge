@@ -89,6 +89,11 @@ jobs:
       # forge is private, so CI clones it once, before the caller's env or any
       # project code runs, with the token on that one git command. Every later
       # pre-commit fetch of forge reads this local mirror instead of GitHub.
+      - &setup-uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
       - &forge-mirror
         name: Mirror forge for pre-commit
         env:
@@ -96,9 +101,20 @@ jobs:
         run: |
           declare +x token=$FORGE_TOKEN
           unset FORGE_TOKEN
-          # Every repo URL the project's hooks name, as written.
-          repos=$(sed -nE "s/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*['\"]?([^'\"[:space:]#]+).*/\1/p" .pre-commit-config.yaml)
-          if ! grep -qiE '^https://github\.com/poipoi300/forge(\.git)?/?$' <<< "$repos"; then
+          # The hooks' repo URLs, read with a YAML parser outside the project's
+          # environment: forge's as written, and any other URL a forge URL is a
+          # prefix of, which git's prefix rewriting would otherwise capture.
+          routes=$(uv run --no-project --isolated --with pyyaml==6.0.3 python -I - <<'EOF'
+          import re
+          import yaml
+          config = yaml.safe_load(open(".pre-commit-config.yaml", encoding="utf-8"))
+          urls = [str(repo["repo"]) for repo in config["repos"]]
+          forge = [url for url in urls if re.fullmatch(r"https://github\.com/poipoi300/forge(\.git)?/?", url, re.IGNORECASE)]
+          captured = [url for url in urls if url not in forge and any(url.startswith(prefix) for prefix in forge)]
+          print("\n".join([*(f"forge {url}" for url in forge), *(f"keep {url}" for url in captured)]))
+          EOF
+          )
+          if ! grep -q '^forge ' <<< "$routes"; then
             exit 0
           fi
           mirror=$RUNNER_TEMP/forge.git
@@ -121,16 +137,13 @@ jobs:
             /*) url=file://$path ;;
             *) url=file:///$path ;;
           esac
-          # insteadOf rewrites by prefix and the longest prefix wins: each forge URL as
-          # written maps to the mirror, and every other repo maps to itself, so a sibling
-          # such as forge-extension is left alone.
-          while IFS= read -r repo; do
-            if grep -qiE '^https://github\.com/poipoi300/forge(\.git)?/?$' <<< "$repo"; then
-              git config --global --add url."$url".insteadOf "$repo"
-            else
-              git config --global --add url."$repo".insteadOf "$repo"
-            fi
-          done <<< "$repos"
+          # insteadOf rewrites by prefix and the longest prefix wins.
+          while read -r kind repo; do
+            case $kind in
+              forge) git config --global --add url."$url".insteadOf "$repo" ;;
+              keep) git config --global --add url."$repo".insteadOf "$repo" ;;
+            esac
+          done <<< "$routes"
       # SKIP, FORGE_* and DIFF_COVER_* steer the gates themselves, so callers cannot set them.
       - &export-env
         name: Export the project's environment
@@ -187,11 +200,6 @@ jobs:
         if: inputs.cargo-tools != ''
         with:
           tool: ${{ inputs.cargo-tools }}
-      - &setup-uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-        with:
-          version: ${{ inputs.uv-version }}
-          enable-cache: true
       - &sync
         name: Install the project's gate tools
         run: uv sync --locked
@@ -225,12 +233,12 @@ jobs:
     steps:
       - *keep-line-endings
       - *checkout
+      - *setup-uv
       - *forge-mirror
       - *export-env
       # The project's install may build native code, as on the lanes.
       - *apt-packages
       - *rust-toolchain
-      - *setup-uv
       - *sync
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -243,6 +251,10 @@ jobs:
           OS: ${{ inputs.os }}
           REPORTS: ${{ runner.temp }}/forge-coverage
         run: |
+          if ! jq -e 'length == (unique | length)' <<< "$OS" >/dev/null; then
+            echo "::error::the os input lists a runner image twice; each lane needs its own"
+            exit 1
+          fi
           while IFS= read -r os; do
             if [[ ! -d $REPORTS/lane-$os ]]; then
               echo "::error::the $os lane sent no coverage reports"
