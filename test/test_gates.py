@@ -165,6 +165,7 @@ def test_the_forge_token_only_reaches_a_git_only_step_before_any_project_code() 
             "*)",
             "esac",
             "while",
+            "repo=${repo%$'\\r'}",
             "forge)",
             "keep)",
             "done",
@@ -245,7 +246,8 @@ def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
     assert run_step(tmp_path, script, env)[0] == 0
 
 
-def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) -> None:
+@pytest.mark.parametrize("line_end", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path, line_end: str) -> None:
     routes = step_script("lane", "Route forge to a local mirror")
     script = step_script("lane", "Mirror forge for pre-commit")
     real_git = subprocess.check_output(["bash", "-c", "command -v git"], text=True).strip()
@@ -278,9 +280,12 @@ def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) ->
     env["GITHUB_WORKSPACE"] = str(workspace)
     # A checkout's uv configuration must not reach the parser.
     (workspace / "uv.toml").write_text("no-index = true\n")
-    for step in (routes, script):
-        status, _, output = run_step(tmp_path, step, env)
-        assert status == 0, output
+    status, _, output = run_step(tmp_path, routes, env)
+    assert status == 0, output
+    found = tmp_path / "forge-routes"
+    found.write_bytes(found.read_bytes().replace(b"\n", line_end.encode()))
+    status, _, output = run_step(tmp_path, script, env)
+    assert status == 0, output
 
     def rewritten(url: str) -> str:
         probe = tmp_path / "probe"

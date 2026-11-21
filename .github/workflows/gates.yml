@@ -141,6 +141,8 @@ jobs:
           esac
           # insteadOf rewrites by prefix and the longest prefix wins.
           while read -r kind repo; do
+            # Python on Windows writes the file with CRLF.
+            repo=${repo%$'\r'}
             case $kind in
               forge) git config --global --add url."$url".insteadOf "$repo" ;;
               keep) git config --global --add url."$repo".insteadOf "$repo" ;;
