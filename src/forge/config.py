@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from forge.requirements import ConfigError as ConfigError
+from forge.requirements import HarnessRequirements, Requirements, parse_requirements, read_toml
+
 CONFIG_FILENAME = "forge.toml"
-
-
-class ConfigError(Exception):
-    """forge.toml is missing, malformed, or references undefined entries."""
 
 
 @dataclass(frozen=True)
@@ -35,6 +33,7 @@ class ForgeConfig:
     workspace_root: Path
     step_timeout_s: float
     harnesses: dict[str, HarnessConfig]
+    requirements: Requirements = field(default_factory=Requirements)
 
     def harness(self, name: str | None = None) -> HarnessConfig:
         """Return the named harness, or the default when name is None."""
@@ -55,10 +54,7 @@ def load_config(repo_root: Path) -> ForgeConfig:
     path = repo_root / CONFIG_FILENAME
     if not path.is_file():
         raise ConfigError(f"{path} not found")
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"{path} is not valid TOML: {e}") from e
+    raw = read_toml(path)
 
     runner = raw.get("runner")
     if not isinstance(runner, dict):
@@ -87,9 +83,17 @@ def load_config(repo_root: Path) -> ForgeConfig:
     if not isinstance(step_timeout_s, int | float) or step_timeout_s <= 0:
         raise ConfigError("[runner] step_timeout_s must be a positive number")
 
+    requirements = parse_requirements(raw.get("requirements", {}))
+    for name, declaration in requirements.harnesses.items():
+        if name not in harnesses or declaration.cli != harnesses[name].command[0]:
+            raise ConfigError(f"[requirements.harness.{name}] cli must match the configured harness executable")
+    for name, harness in harnesses.items():
+        requirements.harnesses.setdefault(name, HarnessRequirements(harness.command[0]))
+
     return ForgeConfig(
         default_harness=default_harness,
         workspace_root=repo_root / workspace_root,
         step_timeout_s=float(step_timeout_s),
         harnesses=harnesses,
+        requirements=requirements,
     )

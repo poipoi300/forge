@@ -1,6 +1,7 @@
 """forge command-line interface.
 
 uv run forge list
+uv run forge doctor
 uv run forge run habit-tracker url-shortener
 uv run forge run --all
 uv run forge run --prompt "build me a pomodoro timer" --name pomodoro
@@ -10,11 +11,15 @@ uv run forge run habit-tracker --harness pi --through-step 1
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from forge.config import ConfigError, load_config
+from forge.doctor import check_requirements, format_report, terminal_text
 from forge.prompts import ProjectPrompts, PromptError, PromptStep, discover_projects
+from forge.requirements import load_project_requirements
 from forge.runner import StepResult, run_project
 
 
@@ -41,6 +46,12 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="list discovered projects and their step counts")
+    doctor = sub.add_parser("doctor", help="report host-tool requirements and harness availability")
+    doctor.add_argument("--json", action="store_true", help="emit the machine-readable report")
+    doctor.add_argument("--manifest", type=Path, help="check a forge.project.toml file or project directory")
+    doctor.add_argument(
+        "--trust-manifest", action="store_true", help="allow version probes for executables declared by this project"
+    )
 
     run = sub.add_parser("run", help="run prompt sequences through an agent harness")
     run.add_argument("projects", nargs="*", help="project names from prompts/")
@@ -53,10 +64,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = _repo_root()
     try:
+        if args.command == "doctor":
+            manifest: Path | None = args.manifest
+            if args.trust_manifest and manifest is None:
+                doctor.error("--trust-manifest requires --manifest")
+            requirements = load_config(root).requirements if manifest is None else load_project_requirements(manifest)
+            report = check_requirements(requirements, probe_versions=manifest is None or args.trust_manifest)
+            print(json.dumps(asdict(report)) if args.json else format_report(report))
+            return 0 if report.ok else 1
         config = load_config(root)
         projects = discover_projects(root / "prompts")
     except (ConfigError, PromptError) as e:
-        print(f"error: {e}", file=sys.stderr)
+        print(f"error: {terminal_text(str(e))}", file=sys.stderr)
         return 2
 
     if args.command == "list":
