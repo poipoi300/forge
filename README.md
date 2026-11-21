@@ -60,3 +60,41 @@ Run all gates manually:
 uv run pre-commit run --all-files
 bash tools/coverage_gate.sh
 ```
+
+## Evaluation runs
+
+List the prompt projects with `uv run forge list`. Run two independent
+trajectories with `uv run forge run habit-tracker --repeat 2`. A later
+invocation of the same project also starts a fresh run. Add
+`--through-step 1` to attempt only the initial prompt and first follow-up.
+
+Each run writes `runs/<project>/<run_id>/meta/run.json`. Its versioned
+manifest includes all planned steps, their outcomes, and the run's wall time.
+The `meta` directory also contains each step's manifest and the stdout and
+stderr logs for attempted steps. Log paths are relative to `meta`.
+Successful steps seed the next workspace. After a failure, remaining steps
+within the requested limit are marked `prior_step_failed`. Steps beyond the
+limit are marked `through_step`. Skips have a null exit reason and no
+workspace or logs.
+
+Attempt outcomes are `ok`, `timeout`, `crash` (a signal or unclassified
+nonzero exit), `gate_fail` (a reported gate rejection), and
+`harness_error` (setup, launch, or a reported harness error). The run takes
+the first failure's reason, or `ok` when all attempts succeed.
+
+Harness wrappers can include `{telemetry_path}` in their command and write a
+JSON object at that path before returning. Optional fields are `tokens`
+(nonnegative integer), `cost_usd` (measured dollars), `quota_percent`
+(measured share of a quota consumed by the attempt, from 0 to 100), and
+`exit_reason` (`gate_fail` or `harness_error`). Forge also reads token
+counts from Claude Code's single-invocation JSON results when
+`telemetry_format = "claude-json"` is set. Claude reports its CLI dollar
+total as a client-side estimate, so Forge leaves that measurement unknown
+unless a wrapper supplies it.
+[Claude Code cost tracking](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
+
+Unknown measurements are null with a false coverage flag. A measured zero
+has a true flag. Run-level coverage counts attempts with a measurement for
+each unit. `cost_usd_per_attempted_task` divides measured dollars by all
+attempted steps, including failures, and is null when any attempt lacks
+dollar coverage or when there were no attempts.

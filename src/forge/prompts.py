@@ -18,6 +18,12 @@ class PromptError(Exception):
     """The prompts folder violates the naming contract."""
 
 
+def validate_project_name(name: str) -> None:
+    """Require a project name that can serve as one workspace directory."""
+    if name in {"", ".", ".."} or Path(name).name != name or "\\" in name or "\0" in name:
+        raise PromptError(f"invalid project name: {name!r}")
+
+
 @dataclass(frozen=True)
 class PromptStep:
     """One prompt in a project's sequence.

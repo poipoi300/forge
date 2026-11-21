@@ -19,12 +19,13 @@ class HarnessConfig:
 
     Attributes:
         name: Key of the [harness.<name>] table.
-        command: Argv template; "{prompt}" and "{prompt_path}" are substituted
-            per step before execution.
+        command: Argv template with optional prompt and telemetry paths.
+        telemetry_format: Native output format to read for usage.
     """
 
     name: str
     command: tuple[str, ...]
+    telemetry_format: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,10 @@ def load_config(repo_root: Path) -> ForgeConfig:
         command = table.get("command") if isinstance(table, dict) else None
         if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
             raise ConfigError(f"[harness.{name}] needs a non-empty 'command' list of strings")
-        harnesses[name] = HarnessConfig(name=name, command=tuple(command))
+        telemetry_format = table.get("telemetry_format")
+        if telemetry_format is not None and telemetry_format != "claude-json":
+            raise ConfigError(f"[harness.{name}] telemetry_format must be 'claude-json' when set")
+        harnesses[name] = HarnessConfig(name=name, command=tuple(command), telemetry_format=telemetry_format)
 
     default_harness = runner.get("default_harness")
     if not isinstance(default_harness, str) or default_harness not in harnesses:
