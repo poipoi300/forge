@@ -97,13 +97,14 @@ directly.
 | Lint | `uv run ruff check .` (add `--fix` for autofixes) |
 | Types | `uv run mypy .` |
 | All commit-stage gates | `uv run pre-commit run --all-files` |
-| Push-stage gate | `bash tools/coverage_gate.sh` (needs `origin/main`; locally override with `DIFF_COVER_COMPARE_BRANCH=main`) |
+| All push-stage gates | `uv run pre-commit run --hook-stage pre-push --all-files` (scanner setup in README) |
 
 Fast gates block commits: hygiene, `ruff format`, `ruff check`,
-`mypy --strict`. Slow gates block pushes: pytest under coverage plus
-diff-cover requiring **≥90% coverage on changed lines**. CI re-runs everything
-on push/PR, so bypassing hooks locally never lands unchecked code. Write code
-that passes on the first run instead of iterating against the gates.
+`mypy --strict`. Slow gates block pushes. Gitleaks, OSV-Scanner, and Semgrep
+check secrets, dependencies, and source. Pytest runs under coverage and
+diff-cover requires **≥90% coverage on changed lines** against `origin/main`
+(locally override with `DIFF_COVER_COMPARE_BRANCH=main`). CI re-runs the push
+gates and the format, lint, and type checks on main pushes and pull requests.
 
 ## Where code lives
 

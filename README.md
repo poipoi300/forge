@@ -42,21 +42,33 @@ proven setup.
 
 | Piece | Purpose |
 |---|---|
-| `.pre-commit-config.yaml` | Local gates: hygiene + format/lint/types on commit, tests + diff-coverage on push |
+| `.pre-commit-config.yaml` | Hygiene, format, lint and types on commit. Security scans, tests and diff coverage on push. |
+| `.semgrep.yml` | Versioned static analysis rules for Python, JavaScript, TypeScript, and Rust |
 | `tools/repo_hygiene.py` | Zero-network reimplementations of the standard pre-commit hygiene hooks |
 | `tools/coverage_gate.sh` | Test suite under coverage, then ≥90% coverage required on changed lines |
-| `.github/workflows/ci.yml` | The same gates enforced server-side on every push/PR |
+| `.github/workflows/ci.yml` | Runs the pre-push hooks and the lint and type checks on main pushes and pull requests |
 
 ## Setup
 
 ```sh
-uv sync --group dev
-uv run pre-commit install --install-hooks -t pre-commit -t pre-push
+uv sync --locked --group dev
+uv run --locked pre-commit install --install-hooks -t pre-commit -t pre-push
 ```
 
-Run all gates manually:
+When starting a project from the skeleton, keep `.pre-commit-config.yaml`,
+`.github/workflows/ci.yml`, and `.semgrep.yml` together. Install `gitleaks`,
+`osv-scanner`, and `semgrep` on `PATH` locally. The workflow installs the
+versions CI uses. Gitleaks scans local branch and tag histories and redacts
+detected values. OSV-Scanner checks resolved dependencies, including
+`uv.lock`, `bun.lock`, and `Cargo.lock`, against the online OSV database.
+Semgrep runs the checked-in rules with telemetry disabled. Findings fail the
+push and CI gates. Push the checked-out revision with no staged changes, one
+ref at a time. Pre-commit exposes only the first ref to the source and coverage
+gates.
+
+Run both gate stages manually.
 
 ```sh
-uv run pre-commit run --all-files
-bash tools/coverage_gate.sh
+uv run --locked pre-commit run --all-files
+uv run --locked pre-commit run --hook-stage pre-push --all-files
 ```

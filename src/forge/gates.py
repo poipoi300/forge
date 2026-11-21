@@ -47,6 +47,9 @@ DETERMINISTIC_GATES: tuple[Gate, ...] = (
     Gate("ruff-format", GateStage.COMMIT, ci_enforced=True),
     Gate("ruff-check", GateStage.COMMIT, ci_enforced=True),
     Gate("mypy", GateStage.COMMIT, ci_enforced=True),
+    Gate("gitleaks", GateStage.PUSH, ci_enforced=True),
+    Gate("osv-scanner", GateStage.PUSH, ci_enforced=True),
+    Gate("semgrep", GateStage.PUSH, ci_enforced=True),
     Gate("tests-and-diff-coverage", GateStage.PUSH, ci_enforced=True),
 )
 

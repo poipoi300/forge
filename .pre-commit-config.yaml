@@ -1,15 +1,13 @@
 # Anti-slop gates. Fast checks block the commit; slow ones block the push.
-# Everything runs locally via `language: system` — no hooks are fetched from
-# GitHub, so this works fully offline after `uv sync --group dev`.
+# Hooks use the local toolchain. OSV-Scanner queries the OSV advisory database.
 #
 # Install once:  uv run pre-commit install --install-hooks -t pre-commit -t pre-push
 # Run manually:  uv run pre-commit run --all-files
 #
-# Python tool versions are pinned in [dependency-groups] dev in pyproject.toml,
-# so `uv run` here uses exactly what CI uses. Bypass in a genuine emergency
-# with `git commit --no-verify` — CI still enforces the same gates on push.
+# Python dev tools use uv.lock. See README.md for scanner prerequisites.
 
 default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
 exclude: '^\.venv/'
 
 repos:
@@ -108,10 +106,35 @@ repos:
   # Slow gates: only on push.
   - repo: local
     hooks:
+      - id: gitleaks
+        name: Gitleaks (committed secrets)
+        entry: gitleaks git --redact=100 --log-opts="--full-history -m --branches --tags HEAD" .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: osv-scanner
+        name: OSV-Scanner (dependency advisories)
+        entry: osv-scanner scan source --recursive --no-resolve --allow-no-lockfiles .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+      - id: semgrep
+        name: Semgrep (static analysis)
+        entry: semgrep scan --config .semgrep.yml --error --strict --metrics=off --disable-version-check --vim .
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       - id: tests-and-diff-coverage
         name: pytest + diff-cover (>=90% on changed lines)
         entry: bash tools/coverage_gate.sh
         language: system
         pass_filenames: false
+        always_run: true
         stages: [pre-push]
         require_serial: true

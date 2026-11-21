@@ -1,0 +1,18 @@
+rules:
+  - id: python-dynamic-eval
+    languages: [python]
+    severity: ERROR
+    message: Parse data with a format-specific parser instead of evaluating Python code.
+    pattern: eval(...)
+
+  - id: javascript-dynamic-eval
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Parse data with a format-specific parser instead of evaluating JavaScript code.
+    pattern: eval(...)
+
+  - id: rust-disabled-tls-certificate-verification
+    languages: [rust]
+    severity: ERROR
+    message: Keep TLS certificate verification enabled and configure the trusted root certificate.
+    pattern: $CLIENT.danger_accept_invalid_certs(true)
