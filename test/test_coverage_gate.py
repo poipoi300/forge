@@ -123,6 +123,13 @@ def test_python_lanes_merge_so_a_line_covered_on_any_platform_counts(
             "[run] source = [<first-party directories>]",
         ),
         ('[tool.coverage.run]\nrelative_files = true\nsource = ["."]\n', "[report] include_namespace_packages = true"),
+        (
+            (
+                '[tool.coverage.run]\nrelative_files = true\nsource = [".", "None"]\n'
+                "[tool.coverage.report]\ninclude_namespace_packages = true\n"
+            ),
+            "[run] source = [<first-party directories>]",
+        ),
     ],
 )
 def test_python_collection_requires_portable_and_complete_measurement(

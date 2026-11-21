@@ -20,8 +20,8 @@ _WORD = re.compile(rf"\b({'|'.join(MARKERS)})\b")
 _STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"?')
 # Rust literals: strings and raw strings span lines; a char literal holds one (escaped) char.
 _RUST_LITERAL = re.compile(
-    r'b?r(#*)"(?s:.*?)"\1'
-    r'|b?"(?:[^"\\]|\\.)*"'
+    r'[bc]?r(#*)"(?s:.*?)"\1'
+    r'|[bc]?"(?:[^"\\]|\\.)*"'
     r"|b?'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)|[^\\'\n])'",
     re.DOTALL,
 )

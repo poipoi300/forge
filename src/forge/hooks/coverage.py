@@ -19,14 +19,14 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
-from typing import TextIO
+from typing import Any, TextIO
 
 FAIL_UNDER = 90
 PYTHON_DATA = "python.coverage"
@@ -47,33 +47,36 @@ def _run(argv: Sequence[str], **env: str) -> int:
     return subprocess.run(argv, env={**_env(), **env}, check=False).returncode
 
 
-def _coverage_settings() -> dict[str, list[str]]:
-    """coverage.py's effective settings from `coverage debug config`; list values continue on indented lines."""
+_READ_COVERAGE_CONFIG = """
+import json
+import coverage
+config = coverage.Coverage().config
+print(json.dumps({name: getattr(config, name, None) for name in (
+    "relative_files", "source", "source_pkgs", "source_dirs", "include_namespace_packages"
+)}))
+"""
+
+
+def _coverage_settings() -> dict[str, Any]:
+    """coverage.py's typed settings, read through its own configuration in the project's environment."""
     report = subprocess.run(
-        project_tool("coverage", "debug", "config"), env=_env(), capture_output=True, text=True, check=True
+        project_tool("python", "-c", _READ_COVERAGE_CONFIG), env=_env(), capture_output=True, text=True, check=True
     ).stdout
-    settings: dict[str, list[str]] = {}
-    key = ""
-    for line in report.splitlines():
-        if entry := re.fullmatch(r"\s*(\w+): (.*)", line):
-            key = entry.group(1)
-            settings[key] = [entry.group(2).strip()]
-        elif key and line.strip() and not line.startswith("--"):
-            settings[key].append(line.strip())
-    return {name: [value for value in values if value not in {"None", "-none-"}] for name, values in settings.items()}
+    settings: dict[str, Any] = json.loads(report)
+    return settings
 
 
 def _require_portable_python_config() -> None:
     """Fail unless coverage.py records repository-relative paths and measures first-party directories."""
     settings = _coverage_settings()
     missing = []
-    if settings.get("relative_files") != ["True"]:
+    if settings["relative_files"] is not True:
         missing.append("[run] relative_files = true, so lanes from other checkouts and platforms merge")
     # Package names (source_pkgs, or a name in source) skip unimported modules of namespace packages.
-    roots = settings.get("source", []) + settings.get("source_dirs", [])
-    if not roots or settings.get("source_pkgs") or not all(Path(root).is_dir() for root in roots):
+    roots = [str(root) for root in [*(settings["source"] or []), *(settings["source_dirs"] or [])]]
+    if not roots or settings["source_pkgs"] or not all(Path(root).is_dir() for root in roots):
         missing.append("[run] source = [<first-party directories>], so a module no test imports still counts")
-    if settings.get("include_namespace_packages") != ["True"]:
+    if settings["include_namespace_packages"] is not True:
         missing.append("[report] include_namespace_packages = true, so directories without __init__.py count")
     if missing:
         raise SystemExit(f"forge-coverage-gate: set coverage.py's {'; '.join(missing)}")

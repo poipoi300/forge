@@ -159,6 +159,9 @@ def test_a_python_comment_after_a_unicode_line_separator_in_a_string_is_found(
         ('let help = "first\n// {word} in a multiline string\n";\n', False),
         ("fn f<'a>(x: &'a str) {{}} // {word}\n", True),
         ("let x = 1; # {word} is no Rust comment\n", False),
+        ('let s = c"// {word}"; // fine\n', False),
+        ('let s = cr#"// {word}"#;\n', False),
+        ('let s = c"\\"q"; // {word}\n', True),
     ],
 )
 def test_rust_files_lex_rust_literals(
