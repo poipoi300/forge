@@ -90,9 +90,9 @@ def test_accepts_files_that_only_contain_the_word(
 def test_rejects_markers_anywhere_in_a_block_comment(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str, line: int
 ) -> None:
-    status, out = check(tmp_path, "block.rs", text.format(word=WORDS[0]), capsys)
+    status, out = check(tmp_path, "block.txt", text.format(word=WORDS[0]), capsys)
     assert status == 1
-    assert out.startswith(f"{tmp_path / 'block.rs'}:{line}: {WORDS[0]} comment")
+    assert out.startswith(f"{tmp_path / 'block.txt'}:{line}: {WORDS[0]} comment")
 
 
 @pytest.mark.parametrize(
@@ -140,6 +140,32 @@ def test_python_strings_and_docstrings_are_not_comments(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str
 ) -> None:
     assert check(tmp_path, "lib.py", text.format(word=WORDS[0]), capsys) == (0, "")
+
+
+def test_a_python_comment_after_a_unicode_line_separator_in_a_string_is_found(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status, out = check(tmp_path, "lib.py", f'TEXT = "a\u2028b"\n# {WORDS[0]}: later\n', capsys)
+    assert status == 1
+    assert out.startswith(f"{tmp_path / 'lib.py'}:2: {WORDS[0]} comment")
+
+
+@pytest.mark.parametrize(
+    ("text", "flagged"),
+    [
+        ("let quote = '\"'; // {word}: escape it\n", True),
+        ("let b = b'\\''; // {word}\n", True),
+        ('let help = r#"\nline // {word} in a raw string\n"#;\n', False),
+        ('let help = "first\n// {word} in a multiline string\n";\n', False),
+        ("fn f<'a>(x: &'a str) {{}} // {word}\n", True),
+        ("let x = 1; # {word} is no Rust comment\n", False),
+    ],
+)
+def test_rust_files_lex_rust_literals(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], text: str, flagged: bool
+) -> None:
+    status, _ = check(tmp_path, "lib.rs", text.format(word=WORDS[0]), capsys)
+    assert status == int(flagged)
 
 
 def test_reports_every_offence_in_one_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
