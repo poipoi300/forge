@@ -49,7 +49,10 @@ The deterministic gate layer, published for projects to use by reference.
 ## Using forge from a project
 
 A project never copies forge's files. It pins a forge commit in two places
-and moves both pins together.
+and moves both pins together. forge is public, so neither needs a
+credential. Workflows that call an older `gates.yml` with a `forge-token`
+secret must drop that `secrets:` mapping in the same change that moves the
+pins, because the current workflow no longer declares it.
 
 `.pre-commit-config.yaml`:
 
@@ -79,8 +82,6 @@ jobs:
       apt-packages: libfoo-dev
       rust: true
       cargo-tools: cargo-nextest@0.9.151,cargo-llvm-cov@0.9.1
-    secrets:
-      forge-token: ${{ secrets.FORGE_TOKEN }}
 ```
 
 The workflow's inputs are listed at the top of `gates.yml`. Each lane runs
@@ -106,17 +107,6 @@ other ref or with staged, unstaged or untracked changes; push from a clean
 checkout of what you push. pre-commit hands a pre-push hook only the first ref of a multi-ref
 push, so push one ref at a time. Call `gates.yml` once per
 workflow run: its artifact names are per run.
-
-While forge is private, two grants are needed:
-
-- forge's Actions access level lets the owner's other repositories call
-  `gates.yml` (Settings → Actions → Access).
-- pre-commit clones forge at the pinned commit. Locally it uses your git
-  credentials. In CI, pass a read-only token for this repository as the
-  `forge-token` secret. Only the first step after checkout sees it: one
-  `git clone` into a local mirror that every later pre-commit fetch reads.
-  GitHub withholds secrets from runs for pull requests from forks and from
-  Dependabot, so those runs cannot fetch forge until it is public.
 
 ## Setup
 

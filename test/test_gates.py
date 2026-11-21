@@ -134,58 +134,13 @@ def test_published_workflow_gates_the_merge_of_every_lane() -> None:
     }
 
 
-def test_the_forge_token_only_reaches_a_git_only_step_before_any_project_code() -> None:
+def test_the_workflow_needs_no_credentials() -> None:
+    # forge is public: pre-commit fetches it at the pinned rev with no token, so no
+    # step sees a secret and a caller passes none.
     gates = load_workflow("gates.yml")
+    assert "secrets" not in gates["on"]["workflow_call"]
     for job in gates["jobs"].values():
-        steps = job["steps"]
-        holders = [step for step in steps if "secrets." in str(step)]
-        assert [step["name"] for step in holders] == ["Mirror forge for pre-commit"]
-        script = holders[0]["run"]
-        assert script.count("${FORGE_TOKEN}") == 1
-        assert "git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge forge.git" in script
-        # Nothing but git, grep and shell builtins runs where the token is.
-        commands = {
-            line.split()[0] for line in script.splitlines() if line.strip() and not line.strip().startswith("#")
-        }
-        assert commands <= {
-            "if",
-            "exit",
-            "fi",
-            "clone=(git",
-            "GIT_CONFIG_COUNT=1",
-            'GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf"',
-            "GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge",
-            '"${clone[@]}"',
-            "elif",
-            "echo",
-            "git",
-            "path=$(git",
-            "case",
-            "/*)",
-            "*)",
-            "esac",
-            "while",
-            "repo=${repo%$'\\r'}",
-            "forge)",
-            "keep)",
-            "done",
-        }, commands
-        # Before it: the line-ending setting, checkout, setup-uv and the route step,
-        # which runs uv without the checkout's configuration; the caller's env comes after.
-        before = [
-            step.get("name") or step.get("uses", "").partition("@")[0] for step in steps[: steps.index(holders[0])]
-        ]
-        assert before == [
-            "Keep line endings as committed",
-            "actions/checkout",
-            "astral-sh/setup-uv",
-            "Route forge to a local mirror",
-        ]
-        routes = steps[steps.index(holders[0]) - 1]
-        assert routes["working-directory"] == "${{ runner.temp }}"
-        assert "uv run --no-config --no-project --isolated --with pyyaml==6.0.3 python -I -" in routes["run"]
-        names = [step.get("name") for step in steps]
-        assert names.index("Mirror forge for pre-commit") < names.index("Export the project's environment")
+        assert "secrets." not in str(job["steps"])
 
 
 def step_script(job: str, name: str) -> str:
@@ -244,69 +199,6 @@ def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
     assert run_step(tmp_path, script, env)[0] == 1
     (tmp_path / "lane-windows-2025").mkdir()
     assert run_step(tmp_path, script, env)[0] == 0
-
-
-@pytest.mark.parametrize("line_end", ["\n", "\r\n"], ids=["lf", "crlf"])
-def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path, line_end: str) -> None:
-    routes = step_script("lane", "Route forge to a local mirror")
-    script = step_script("lane", "Mirror forge for pre-commit")
-    real_git = subprocess.check_output(["bash", "-c", "command -v git"], text=True).strip()
-    shim = tmp_path / "bin" / "git"
-    shim.parent.mkdir()
-    # A clone becomes an empty bare repository; everything else is real git.
-    shim.write_text(
-        f'#!/bin/bash\nif [[ " $* " == *" clone "* ]]; then exec {real_git} init -q --bare "${{@: -1}}"; fi\n'
-        f'exec {real_git} "$@"\n'
-    )
-    shim.chmod(0o755)
-    (tmp_path / ".pre-commit-config.yaml").write_text(
-        "repos:\n"
-        "  - repo: https://github.com/poipoi300/forge.git\n    rev: x\n    hooks: []\n"
-        "  - \"repo\": 'https://github.com/poipoi300/forge'\n    rev: x\n    hooks: []\n"
-        "  - {repo: https://github.com/poipoi300/forge.git-extension, rev: x, hooks: []}\n"
-        "  - {repo: https://github.com/poipoi300/forge-extension, rev: x, hooks: []}\n"
-        "  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: x\n    hooks: []\n"
-        "  - repo: local\n    hooks: []\n"
-    )
-    env = {
-        "PATH": f"{shim.parent}{os.pathsep}{os.environ['PATH']}",
-        "RUNNER_TEMP": str(tmp_path),
-        "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
-        "FORGE_TOKEN": "",
-    }
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (tmp_path / ".pre-commit-config.yaml").rename(workspace / ".pre-commit-config.yaml")
-    env["GITHUB_WORKSPACE"] = str(workspace)
-    # A checkout's uv configuration must not reach the parser.
-    (workspace / "uv.toml").write_text("no-index = true\n")
-    status, _, output = run_step(tmp_path, routes, env)
-    assert status == 0, output
-    found = tmp_path / "forge-routes"
-    found.write_bytes(found.read_bytes().replace(b"\n", line_end.encode()))
-    status, _, output = run_step(tmp_path, script, env)
-    assert status == 0, output
-
-    def rewritten(url: str) -> str:
-        probe = tmp_path / "probe"
-        subprocess.run(["git", "init", "-q", str(probe)], check=True)
-        subprocess.run(["git", "-C", str(probe), "remote", "add", "x", url], check=True)
-        result = subprocess.check_output(
-            ["git", "-C", str(probe), "remote", "get-url", "x"], text=True, env={**os.environ, **env}
-        ).strip()
-        subprocess.run(["rm", "-rf", str(probe)], check=True)
-        return result
-
-    mirror = (tmp_path / "forge.git").resolve().as_posix()
-    assert rewritten("https://github.com/poipoi300/forge.git") == f"file://{mirror}"
-    assert rewritten("https://github.com/poipoi300/forge") == f"file://{mirror}"
-    for sibling in ("https://github.com/poipoi300/forge-extension", "https://github.com/poipoi300/forge.git-extension"):
-        assert rewritten(sibling) == sibling
-    # Repositories forge's URLs do not prefix get no rule, so a runner's own routing still applies.
-    rules = subprocess.check_output(
-        ["git", "config", "--global", "--get-regexp", r"^url\."], text=True, env={**os.environ, **env}
-    )
-    assert "pre-commit-hooks" not in rules
 
 
 @pytest.fixture

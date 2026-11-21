@@ -4,8 +4,6 @@
 #     gates:
 #       uses: poipoi300/forge/.github/workflows/gates.yml@<forge commit SHA>
 #       with: { ... project inputs ... }
-#       secrets:
-#         forge-token: ${{ secrets.FORGE_TOKEN }}
 #
 # The project's `.pre-commit-config.yaml` owns every gate command. Each lane
 # runs the commit stage and the push stage through pre-commit on its own
@@ -56,10 +54,6 @@ on:
         description: Space-separated paths removed after the other push gates, before coverage collection.
         type: string
         default: ""
-    secrets:
-      forge-token:
-        description: A read-only token for poipoi300/forge, which pre-commit clones at the pinned rev while forge is private.
-        required: false
 
 permissions:
   contents: read
@@ -91,63 +85,6 @@ jobs:
         with:
           version: ${{ inputs.uv-version }}
           enable-cache: true
-      # The hooks' repo URLs, read with a YAML parser that takes no configuration
-      # from the checkout: forge's URLs as written, and any other URL a forge URL
-      # is a prefix of, which git's prefix rewriting would otherwise capture.
-      - &forge-routes
-        name: Route forge to a local mirror
-        working-directory: ${{ runner.temp }}
-        run: |
-          uv run --no-config --no-project --isolated --with pyyaml==6.0.3 python -I - \
-            "$GITHUB_WORKSPACE/.pre-commit-config.yaml" > forge-routes <<'EOF'
-          import re
-          import sys
-          import yaml
-          config = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-          urls = [str(repo["repo"]) for repo in config["repos"]]
-          forge = [url for url in urls if re.fullmatch(r"https://github\.com/poipoi300/forge(\.git)?/?", url, re.IGNORECASE)]
-          captured = [url for url in urls if url not in forge and any(url.startswith(prefix) for prefix in forge)]
-          print("\n".join([*(f"forge {url}" for url in forge), *(f"keep {url}" for url in captured)]))
-          EOF
-      # forge is private, so CI clones it once, before the caller's env or any
-      # project code runs. The token reaches only this step, which runs nothing
-      # but git; every later pre-commit fetch of forge reads the mirror.
-      - &forge-mirror
-        name: Mirror forge for pre-commit
-        working-directory: ${{ runner.temp }}
-        env:
-          FORGE_TOKEN: ${{ secrets.forge-token }}
-        run: |
-          if ! grep -q '^forge ' forge-routes; then
-            exit 0
-          fi
-          # --mirror also takes pull-request refs, so a pin on an unmerged branch resolves.
-          clone=(git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge forge.git)
-          if [[ -n $FORGE_TOKEN ]]; then
-            GIT_CONFIG_COUNT=1 \
-              GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf" \
-              GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge \
-              "${clone[@]}"
-          elif ! "${clone[@]}"; then
-            echo "::error::cannot clone poipoi300/forge; pass a read-only token as the forge-token secret"
-            exit 1
-          fi
-          # pre-commit fetches its pinned rev by SHA.
-          git -C forge.git config uploadpack.allowAnySHA1InWant true
-          path=$(git -C forge.git rev-parse --absolute-git-dir)
-          case $path in
-            /*) url=file://$path ;;
-            *) url=file:///$path ;;
-          esac
-          # insteadOf rewrites by prefix and the longest prefix wins.
-          while read -r kind repo; do
-            # Python on Windows writes the file with CRLF.
-            repo=${repo%$'\r'}
-            case $kind in
-              forge) git config --global --add url."$url".insteadOf "$repo" ;;
-              keep) git config --global --add url."$repo".insteadOf "$repo" ;;
-            esac
-          done < forge-routes
       - &export-env
         name: Export the project's environment
         if: inputs.env != ''
@@ -237,8 +174,6 @@ jobs:
       - *keep-line-endings
       - *checkout
       - *setup-uv
-      - *forge-routes
-      - *forge-mirror
       - *export-env
       # The project's install may build native code, as on the lanes.
       - *apt-packages
