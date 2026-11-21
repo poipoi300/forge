@@ -125,8 +125,8 @@ def test_published_workflow_gates_the_merge_of_every_lane() -> None:
         "uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files"
     ]
     # One lane directory per artifact, merged on download into one directory per lane.
-    assert collect["env"]["FORGE_COVERAGE_COLLECT"] == upload["with"]["path"] + "/lane-${{ strategy.job-index }}"
-    assert upload["with"]["name"] == "forge-coverage-${{ strategy.job-index }}"
+    assert collect["env"]["FORGE_COVERAGE_COLLECT"] == upload["with"]["path"] + "/lane-${{ matrix.os }}"
+    assert upload["with"]["name"] == "forge-coverage-${{ matrix.os }}"
     assert upload["with"]["if-no-files-found"] == "error"
     assert download["with"] == {
         "pattern": "forge-coverage-*",
@@ -142,8 +142,9 @@ def test_the_forge_token_only_reaches_one_git_clone_before_any_project_code() ->
         holders = [step for step in steps if "secrets." in str(step)]
         assert [step["name"] for step in holders] == ["Mirror forge for pre-commit"]
         script = holders[0]["run"]
-        assert script.count("${FORGE_TOKEN}") == 1
-        assert "git clone --bare --quiet https://github.com/poipoi300/forge" in script
+        assert script.startswith("declare +x token=$FORGE_TOKEN\nunset FORGE_TOKEN\n")
+        assert script.count("${token}") == 1
+        assert "git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge" in script
         assert not re.search(r"\buvx?\b|pre-commit (run|install)", script)
         # Only the checkout runs earlier, and it runs no project code; the caller's env comes after.
         before = [step.get("name") or step.get("uses", "") for step in steps[: steps.index(holders[0])]]
@@ -197,11 +198,54 @@ def test_callers_cannot_set_the_variables_that_steer_the_gates(
 
 def test_the_merge_refuses_a_missing_lane(tmp_path: Path) -> None:
     script = step_script("coverage", "Check every lane sent its reports")
-    (tmp_path / "lane-0").mkdir()
+    (tmp_path / "lane-ubuntu-24.04").mkdir()
     env = {"OS": '["ubuntu-24.04", "windows-2025"]', "REPORTS": str(tmp_path)}
     assert run_step(tmp_path, script, env)[0] == 1
-    (tmp_path / "lane-1").mkdir()
+    (tmp_path / "lane-windows-2025").mkdir()
     assert run_step(tmp_path, script, env)[0] == 0
+
+
+def test_the_mirror_takes_only_forge_urls_and_leaves_siblings(tmp_path: Path) -> None:
+    script = step_script("lane", "Mirror forge for pre-commit")
+    real_git = subprocess.check_output(["bash", "-c", "command -v git"], text=True).strip()
+    shim = tmp_path / "bin" / "git"
+    shim.parent.mkdir()
+    # A clone becomes an empty bare repository; everything else is real git.
+    shim.write_text(
+        f'#!/bin/bash\nif [[ " $* " == *" clone "* ]]; then exec {real_git} init -q --bare "${{@: -1}}"; fi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    shim.chmod(0o755)
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "repos:\n"
+        "  - repo: https://github.com/poipoi300/forge.git\n    rev: x\n    hooks: []\n"
+        "  - repo: 'https://github.com/poipoi300/forge'\n    rev: x\n    hooks: []\n"
+        "  - repo: https://github.com/poipoi300/forge-extension\n    rev: x\n    hooks: []\n"
+        "  - repo: local\n    hooks: []\n"
+    )
+    env = {
+        "PATH": f"{shim.parent}{os.pathsep}{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig"),
+        "FORGE_TOKEN": "",
+    }
+    status, _, _ = run_step(tmp_path, script, env)
+    assert status == 0
+
+    def rewritten(url: str) -> str:
+        probe = tmp_path / "probe"
+        subprocess.run(["git", "init", "-q", str(probe)], check=True)
+        subprocess.run(["git", "-C", str(probe), "remote", "add", "x", url], check=True)
+        result = subprocess.check_output(
+            ["git", "-C", str(probe), "remote", "get-url", "x"], text=True, env={**os.environ, **env}
+        ).strip()
+        subprocess.run(["rm", "-rf", str(probe)], check=True)
+        return result
+
+    mirror = (tmp_path / "forge.git").resolve().as_posix()
+    assert rewritten("https://github.com/poipoi300/forge.git") == f"file://{mirror}"
+    assert rewritten("https://github.com/poipoi300/forge") == f"file://{mirror}"
+    assert rewritten("https://github.com/poipoi300/forge-extension") == "https://github.com/poipoi300/forge-extension"
 
 
 @pytest.fixture

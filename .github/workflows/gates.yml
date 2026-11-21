@@ -94,19 +94,26 @@ jobs:
         env:
           FORGE_TOKEN: ${{ secrets.forge-token }}
         run: |
-          if ! grep -qi 'github\.com/poipoi300/forge' .pre-commit-config.yaml; then
+          declare +x token=$FORGE_TOKEN
+          unset FORGE_TOKEN
+          # Every repo URL the project's hooks name, as written.
+          repos=$(sed -nE "s/^[[:space:]]*-?[[:space:]]*repo:[[:space:]]*['\"]?([^'\"[:space:]#]+).*/\1/p" .pre-commit-config.yaml)
+          if ! grep -qiE '^https://github\.com/poipoi300/forge(\.git)?/?$' <<< "$repos"; then
             exit 0
           fi
           mirror=$RUNNER_TEMP/forge.git
-          if [[ -n $FORGE_TOKEN ]]; then
+          # --mirror also takes pull-request refs, so a pin on an unmerged branch resolves.
+          clone=(git -c credential.helper= clone --mirror --quiet https://github.com/poipoi300/forge "$mirror")
+          if [[ -n $token ]]; then
             GIT_CONFIG_COUNT=1 \
-              GIT_CONFIG_KEY_0="url.https://x-access-token:${FORGE_TOKEN}@github.com/poipoi300/forge.insteadOf" \
+              GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/poipoi300/forge.insteadOf" \
               GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge \
-              git clone --bare --quiet https://github.com/poipoi300/forge "$mirror"
-          elif ! git clone --bare --quiet https://github.com/poipoi300/forge "$mirror"; then
+              "${clone[@]}"
+          elif ! "${clone[@]}"; then
             echo "::error::cannot clone poipoi300/forge; pass a read-only token as the forge-token secret"
             exit 1
           fi
+          unset token
           # pre-commit fetches its pinned rev by SHA.
           git -C "$mirror" config uploadpack.allowAnySHA1InWant true
           path=$(git -C "$mirror" rev-parse --absolute-git-dir)
@@ -114,7 +121,16 @@ jobs:
             /*) url=file://$path ;;
             *) url=file:///$path ;;
           esac
-          git config --global url."$url".insteadOf https://github.com/poipoi300/forge
+          # insteadOf rewrites by prefix and the longest prefix wins: each forge URL as
+          # written maps to the mirror, and every other repo maps to itself, so a sibling
+          # such as forge-extension is left alone.
+          while IFS= read -r repo; do
+            if grep -qiE '^https://github\.com/poipoi300/forge(\.git)?/?$' <<< "$repo"; then
+              git config --global --add url."$url".insteadOf "$repo"
+            else
+              git config --global --add url."$repo".insteadOf "$repo"
+            fi
+          done <<< "$repos"
       # SKIP, FORGE_* and DIFF_COVER_* steer the gates themselves, so callers cannot set them.
       - &export-env
         name: Export the project's environment
@@ -195,11 +211,11 @@ jobs:
       # Each artifact holds one lane directory, so the merged download has one per lane.
       - name: Collect this platform's coverage
         env:
-          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage/lane-${{ strategy.job-index }}
+          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage/lane-${{ matrix.os }}
         run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: forge-coverage-${{ strategy.job-index }}
+          name: forge-coverage-${{ matrix.os }}
           path: ${{ runner.temp }}/forge-coverage
           if-no-files-found: error
 
@@ -227,13 +243,12 @@ jobs:
           OS: ${{ inputs.os }}
           REPORTS: ${{ runner.temp }}/forge-coverage
         run: |
-          lanes=$(jq length <<< "$OS")
-          for ((lane = 0; lane < lanes; lane++)); do
-            if [[ ! -d $REPORTS/lane-$lane ]]; then
-              echo "::error::lane $lane sent no coverage reports"
+          while IFS= read -r os; do
+            if [[ ! -d $REPORTS/lane-$os ]]; then
+              echo "::error::the $os lane sent no coverage reports"
               exit 1
             fi
-          done
+          done < <(jq -r '.[]' <<< "$OS")
       # A pull request compares with its base; a push to the default branch
       # compares its two tips, which survives a force push, and the first push
       # compares with the empty tree; any other push compares with the default
