@@ -1,6 +1,7 @@
 """The gate registry, the published hooks, forge's own hooks and the CI workflows agree."""
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -134,22 +135,21 @@ def test_published_workflow_gates_the_merge_of_every_lane() -> None:
     }
 
 
-def test_the_forge_token_is_scoped_to_fetching_the_pinned_hooks() -> None:
+def test_the_forge_token_only_reaches_one_git_clone_before_any_project_code() -> None:
     gates = load_workflow("gates.yml")
     for job in gates["jobs"].values():
         steps = job["steps"]
         holders = [step for step in steps if "secrets." in str(step)]
-        assert [step["name"] for step in holders] == ["Fetch the pinned hooks"]
+        assert [step["name"] for step in holders] == ["Mirror forge for pre-commit"]
         script = holders[0]["run"]
-        assert "git config --global" not in script
-        # The token leaves the environment before any command runs, and only an
-        # isolated pre-commit installing the forge-only config sees it.
-        assert script.startswith("token=$FORGE_TOKEN\nunset FORGE_TOKEN\n")
-        assert script.count("GIT_CONFIG_KEY_0") == 1
-        assert 'uvx --isolated --from pre-commit==4.6.2 pre-commit install-hooks --config "$forge_only"' in script
-        assert "uv run --no-project --isolated" in script and "python -I -" in script
-        fetch = steps.index(holders[0])
-        assert all("pre-commit run" not in step.get("run", "") for step in steps[:fetch])
+        assert script.count("${FORGE_TOKEN}") == 1
+        assert "git clone --bare --quiet https://github.com/poipoi300/forge" in script
+        assert not re.search(r"\buvx?\b|pre-commit (run|install)", script)
+        # Only the checkout runs earlier, and it runs no project code; the caller's env comes after.
+        before = [step.get("name") or step.get("uses", "") for step in steps[: steps.index(holders[0])]]
+        assert before == ["Keep line endings as committed", "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"]
+        names = [step.get("name") for step in steps]
+        assert names.index("Mirror forge for pre-commit") < names.index("Export the project's environment")
 
 
 def step_script(job: str, name: str) -> str:

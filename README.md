@@ -113,7 +113,8 @@ While forge is private, two grants are needed:
   `gates.yml` (Settings → Actions → Access).
 - pre-commit clones forge at the pinned commit. Locally it uses your git
   credentials. In CI, pass a read-only token for this repository as the
-  `forge-token` secret; only the step that fetches the pinned hooks sees it.
+  `forge-token` secret. Only the first step after checkout sees it: one
+  `git clone` into a local mirror that every later pre-commit fetch reads.
   GitHub withholds secrets from runs for pull requests from forks and from
   Dependabot, so those runs cannot fetch forge until it is public.
 
