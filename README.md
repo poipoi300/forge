@@ -60,3 +60,22 @@ Run all gates manually:
 uv run pre-commit run --all-files
 bash tools/coverage_gate.sh
 ```
+
+## Start a task from a pinned commit
+
+Add a seed for the project in `forge.toml`. For a project with a prompt at
+`prompts/my-task.md`, use the following table and replace the example commit
+with the full commit ID from your local fixture repository.
+
+```toml
+[seed.my-task]
+repository = "fixtures/my-task"
+commit = "0123456789abcdef0123456789abcdef01234567"
+```
+
+Run `uv run forge run my-task`. Relative fixture paths are relative to
+`forge.toml`. The initial workspace checks out the pinned commit with a detached
+HEAD and contains its Git ancestry. The initial manifest at
+`runs/my-task/meta/step-00-initial.json` records the Git SHA in `starting_head`
+before the harness runs. Follow-ups copy the previous workspace's files without
+its Git metadata. Steps without a Git seed record `starting_head` as `null`.
