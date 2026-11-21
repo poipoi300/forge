@@ -142,9 +142,12 @@ def test_the_forge_token_is_scoped_to_fetching_the_pinned_hooks() -> None:
         assert [step["name"] for step in holders] == ["Fetch the pinned hooks"]
         script = holders[0]["run"]
         assert "git config --global" not in script
-        # Only the forge-only config's install sees the credential.
+        # The token leaves the environment before any command runs, and only an
+        # isolated pre-commit installing the forge-only config sees it.
+        assert script.startswith("token=$FORGE_TOKEN\nunset FORGE_TOKEN\n")
         assert script.count("GIT_CONFIG_KEY_0") == 1
-        assert 'install-hooks --config "$forge_only"' in script
+        assert 'uvx --isolated --from pre-commit==4.6.2 pre-commit install-hooks --config "$forge_only"' in script
+        assert "uv run --no-project --isolated" in script and "python -I -" in script
         fetch = steps.index(holders[0])
         assert all("pre-commit run" not in step.get("run", "") for step in steps[:fetch])
 

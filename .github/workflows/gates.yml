@@ -150,16 +150,19 @@ jobs:
       - &sync
         name: Install the project's gate tools
         run: uv sync --locked
-      # The token reaches one command: pre-commit installing forge's own hooks,
-      # by id only, from a config holding just the forge entries. pre-commit
-      # caches that clone, so the project's hooks later install without it.
+      # The token reaches one command: an isolated, pinned pre-commit (not the
+      # project's environment) installing forge's own hooks, by id only, from a
+      # config holding just the forge entries. pre-commit caches that clone, so
+      # the project's hooks later install from the shared cache without it.
       - &fetch-hooks
         name: Fetch the pinned hooks
         env:
           FORGE_TOKEN: ${{ secrets.forge-token }}
         run: |
+          token=$FORGE_TOKEN
+          unset FORGE_TOKEN
           forge_only=$RUNNER_TEMP/forge-hooks.yaml
-          uv run --locked python - "$forge_only" <<'EOF'
+          uv run --no-project --isolated --with pyyaml==6.0.3 python -I - "$forge_only" <<'EOF'
           import sys
           import yaml
           config = yaml.safe_load(open(".pre-commit-config.yaml", encoding="utf-8"))
@@ -170,15 +173,14 @@ jobs:
           ]
           yaml.safe_dump({"repos": forge}, open(sys.argv[1], "w", encoding="utf-8"))
           EOF
-          token=$FORGE_TOKEN
-          unset FORGE_TOKEN
+          fetch=(uvx --isolated --from pre-commit==4.6.2 pre-commit install-hooks --config "$forge_only")
           if [[ -n $token ]]; then
             GIT_CONFIG_COUNT=1 \
               GIT_CONFIG_KEY_0="url.https://x-access-token:${token}@github.com/poipoi300/forge.insteadOf" \
               GIT_CONFIG_VALUE_0=https://github.com/poipoi300/forge \
-              uv run --locked pre-commit install-hooks --config "$forge_only"
+              "${fetch[@]}"
           else
-            uv run --locked pre-commit install-hooks --config "$forge_only"
+            "${fetch[@]}"
           fi
       - name: Commit stage
         run: uv run --locked pre-commit run --hook-stage pre-commit --all-files
