@@ -60,7 +60,12 @@ print(json.dumps({name: getattr(config, name, None) for name in (
 def _coverage_settings() -> dict[str, Any]:
     """coverage.py's typed settings, read through its own configuration in the project's environment."""
     report = subprocess.run(
-        project_tool("python", "-c", _READ_COVERAGE_CONFIG), env=_env(), capture_output=True, text=True, check=True
+        # -I keeps the project's own files (say a coverage.py at the root) off the import path.
+        project_tool("python", "-I", "-c", _READ_COVERAGE_CONFIG),
+        env=_env(),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     settings: dict[str, Any] = json.loads(report)
     return settings

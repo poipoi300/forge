@@ -178,6 +178,12 @@ def test_parallel_mode_shards_become_one_lane_report(
     assert coverage.main(["--python"]) == 0
 
 
+def test_a_root_level_coverage_module_does_not_shadow_coverage_py(repo: Path) -> None:
+    write_python_project(repo, tested=("linux", "windows"))
+    (repo / "coverage.py").write_text('raise SystemExit("the project module was imported")\n')
+    coverage._require_portable_python_config()
+
+
 def test_an_untested_module_in_a_namespace_package_fails_the_gate(repo: Path) -> None:
     write_python_project(repo, tested=("linux", "windows"))
     (repo / "pkg").mkdir()
