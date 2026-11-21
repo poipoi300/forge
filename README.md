@@ -95,12 +95,15 @@ imports still counts. It refuses to run without both:
 ```toml
 [tool.coverage.run]
 relative_files = true
-source = ["src"]
+source = ["src"]  # directories, not package names
+
+[tool.coverage.report]
+include_namespace_packages = true
 ```
 
 Locally the hook tests the checked-out tree, so it refuses a push of any
-other ref or with staged changes; push from a clean checkout of what you
-push. pre-commit hands a pre-push hook only the first ref of a multi-ref
+other ref or with staged, unstaged or untracked changes; push from a clean
+checkout of what you push. pre-commit hands a pre-push hook only the first ref of a multi-ref
 push, so push one ref at a time. Call `gates.yml` once per
 workflow run: its artifact names are per run.
 

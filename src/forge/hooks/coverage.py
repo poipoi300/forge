@@ -47,21 +47,36 @@ def _run(argv: Sequence[str], **env: str) -> int:
     return subprocess.run(argv, env={**_env(), **env}, check=False).returncode
 
 
-def _require_portable_python_config() -> None:
-    """Fail unless coverage.py records repository-relative paths and measures first-party code."""
+def _coverage_settings() -> dict[str, list[str]]:
+    """coverage.py's effective settings from `coverage debug config`; list values continue on indented lines."""
     report = subprocess.run(
         project_tool("coverage", "debug", "config"), env=_env(), capture_output=True, text=True, check=True
     ).stdout
-    settings = dict(re.findall(r"^\s*(\w+): (.*)$", report, re.MULTILINE))
+    settings: dict[str, list[str]] = {}
+    key = ""
+    for line in report.splitlines():
+        if entry := re.fullmatch(r"\s*(\w+): (.*)", line):
+            key = entry.group(1)
+            settings[key] = [entry.group(2).strip()]
+        elif key and line.strip() and not line.startswith("--"):
+            settings[key].append(line.strip())
+    return {name: [value for value in values if value not in {"None", "-none-"}] for name, values in settings.items()}
+
+
+def _require_portable_python_config() -> None:
+    """Fail unless coverage.py records repository-relative paths and measures first-party directories."""
+    settings = _coverage_settings()
     missing = []
-    if settings.get("relative_files") != "True":
-        missing.append("relative_files = true, so lanes from other checkouts and platforms merge")
-    if all(settings.get(key, "None") in {"None", "-none-"} for key in ("source", "source_pkgs", "source_dirs")):
-        missing.append("source = [<first-party code>], so a module no test imports still counts as uncovered")
-    if settings.get("include_namespace_packages") != "True":
-        missing.append("include_namespace_packages = true (under [report]), so source dirs without __init__.py count")
+    if settings.get("relative_files") != ["True"]:
+        missing.append("[run] relative_files = true, so lanes from other checkouts and platforms merge")
+    # Package names (source_pkgs, or a name in source) skip unimported modules of namespace packages.
+    roots = settings.get("source", []) + settings.get("source_dirs", [])
+    if not roots or settings.get("source_pkgs") or not all(Path(root).is_dir() for root in roots):
+        missing.append("[run] source = [<first-party directories>], so a module no test imports still counts")
+    if settings.get("include_namespace_packages") != ["True"]:
+        missing.append("[report] include_namespace_packages = true, so directories without __init__.py count")
     if missing:
-        raise SystemExit(f"forge-coverage-gate: set coverage.py's [run] {'; '.join(missing)}")
+        raise SystemExit(f"forge-coverage-gate: set coverage.py's {'; '.join(missing)}")
 
 
 def _check(argv: Sequence[str], **env: str) -> None:
@@ -195,8 +210,9 @@ def _require_pushing_head(parser: argparse.ArgumentParser) -> None:
     )
     if head != target:
         parser.error(f"the push sends {target}, not the checked-out HEAD {head}; push from a checkout of it")
-    if subprocess.run(["git", "diff", "--cached", "--quiet"]).returncode:
-        parser.error("staged changes are not in the pushed commit; commit or unstage them before pushing")
+    changed = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], text=True)
+    if changed:
+        parser.error(f"the working tree differs from the pushed commit; commit, stash or remove:\n{changed}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

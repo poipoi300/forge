@@ -102,13 +102,27 @@ def test_python_lanes_merge_so_a_line_covered_on_any_platform_counts(
     [
         (
             '[tool.coverage.run]\nsource = ["."]\n[tool.coverage.report]\ninclude_namespace_packages = true\n',
-            "relative_files = true",
+            "[run] relative_files = true",
+        ),
+        (
+            (
+                '[tool.coverage.run]\nrelative_files = true\nsource_pkgs = ["app"]\n'
+                "[tool.coverage.report]\ninclude_namespace_packages = true\n"
+            ),
+            "[run] source = [<first-party directories>]",
+        ),
+        (
+            (
+                '[tool.coverage.run]\nrelative_files = true\nsource = ["app"]\n'
+                "[tool.coverage.report]\ninclude_namespace_packages = true\n"
+            ),
+            "[run] source = [<first-party directories>]",
         ),
         (
             "[tool.coverage.run]\nrelative_files = true\n[tool.coverage.report]\ninclude_namespace_packages = true\n",
-            "source = [<first-party code>]",
+            "[run] source = [<first-party directories>]",
         ),
-        ('[tool.coverage.run]\nrelative_files = true\nsource = ["."]\n', "include_namespace_packages = true"),
+        ('[tool.coverage.run]\nrelative_files = true\nsource = ["."]\n', "[report] include_namespace_packages = true"),
     ],
 )
 def test_python_collection_requires_portable_and_complete_measurement(
@@ -178,7 +192,7 @@ def test_spawned_worker_coverage_lands_in_the_lane_report(repo: Path) -> None:
     assert not list(repo.glob(".coverage*")), "no shard lands in the checkout"
 
 
-def test_staged_changes_block_a_push(
+def test_staged_or_untracked_changes_block_a_push(
     repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     write_python_project(repo, tested=("linux", "windows"))
@@ -188,7 +202,12 @@ def test_staged_changes_block_a_push(
     monkeypatch.setenv("PRE_COMMIT_TO_REF", "feature")
     with pytest.raises(SystemExit):
         coverage.main(["--python"])
-    assert "staged changes are not in the pushed commit" in capsys.readouterr().err
+    assert "the working tree differs from the pushed commit" in capsys.readouterr().err
+    git(repo, "commit", "-qm", "commit the change")
+    (repo / "test_extra.py").write_text("def test_extra():\n    pass\n")
+    with pytest.raises(SystemExit):
+        coverage.main(["--python"])
+    assert "?? test_extra.py" in capsys.readouterr().err
 
 
 def test_an_initial_push_compares_with_the_empty_tree(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
