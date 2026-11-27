@@ -244,3 +244,5 @@ def test_repo_declares_host_tools_per_gate_and_harness() -> None:
     assert {"bun", "cargo", "bwrap"} <= set(config.requirements.host.optional)
     assert {gate.name for gate in DETERMINISTIC_GATES} <= config.requirements.gates.keys()
     assert config.requirements.harnesses.keys() == config.harnesses.keys()
+    for scanner in ("gitleaks", "osv-scanner", "semgrep"):
+        assert scanner in config.requirements.gates[scanner].required

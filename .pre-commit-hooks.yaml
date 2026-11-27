@@ -88,6 +88,33 @@
   types: [text]
   minimum_pre_commit_version: "4.0.0"
 
+- id: gitleaks
+  name: Gitleaks (committed secrets)
+  entry: forge-scan gitleaks
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: osv-scanner
+  name: OSV-Scanner (dependency advisories)
+  entry: forge-scan osv-scanner
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: semgrep
+  name: Semgrep (static analysis)
+  entry: forge-scan semgrep
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [pre-push]
+  minimum_pre_commit_version: "4.0.0"
+
 # Pass the project's languages as args: [--python], [--rust] or both.
 - id: tests-and-diff-coverage
   name: tests under coverage + diff-cover (>=90% on changed lines)

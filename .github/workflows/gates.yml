@@ -38,6 +38,10 @@ on:
         description: Comma-separated cargo tools for taiki-e/install-action, each pinned (cargo-nextest@0.9.151).
         type: string
         default: ""
+      scanners:
+        description: Install Gitleaks, OSV-Scanner, and Semgrep on each test lane.
+        type: boolean
+        default: false
       uv-version:
         description: The uv version to install; empty reads the project's required-version.
         type: string
@@ -140,6 +144,59 @@ jobs:
         if: inputs.cargo-tools != ''
         with:
           tool: ${{ inputs.cargo-tools }}
+      - name: Install security scanners
+        if: inputs.scanners
+        working-directory: ${{ runner.temp }}
+        env:
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/forge-scanners
+          UV_TOOL_DIR: ${{ runner.temp }}/forge-scanner-tools
+        run: |
+          gitleaks_version=8.30.1
+          osv_version=2.7.1
+          ext=
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)
+              leak_target=linux_x64; osv_target=linux_amd64
+              leak_sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+              osv_sha=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 ;;
+            Linux-ARM64)
+              leak_target=linux_arm64; osv_target=linux_arm64
+              leak_sha=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+              osv_sha=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 ;;
+            macOS-ARM64)
+              leak_target=darwin_arm64; osv_target=darwin_arm64
+              leak_sha=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5
+              osv_sha=b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3 ;;
+            Windows-X64)
+              leak_target=windows_x64; osv_target=windows_amd64; ext=.exe
+              leak_sha=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
+              osv_sha=7121dcf420aefbbf89a7f0050c4d3094e079ff93afd334dfc96f16b02ec85800 ;;
+            *)
+              echo "::error::scanner installers do not support $RUNNER_OS-$RUNNER_ARCH"
+              exit 1 ;;
+          esac
+          verify() {
+            if [[ $RUNNER_OS == macOS ]]; then
+              printf '%s  %s\n' "$1" "$2" | shasum -a 256 -c
+            else
+              printf '%s  %s\n' "$1" "$2" | sha256sum -c
+            fi
+          }
+          archive="gitleaks_${gitleaks_version}_${leak_target}.tar.gz"
+          if [[ -n $ext ]]; then archive="gitleaks_${gitleaks_version}_${leak_target}.zip"; fi
+          mkdir -p "$UV_TOOL_BIN_DIR"
+          curl -fsSLo "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v$gitleaks_version/$archive"
+          verify "$leak_sha" "$archive"
+          if [[ -n $ext ]]; then
+            unzip -oq "$archive" "gitleaks$ext" -d "$UV_TOOL_BIN_DIR"
+          else
+            tar -xzf "$archive" -C "$UV_TOOL_BIN_DIR" gitleaks
+          fi
+          curl -fsSLo "osv-scanner$ext" "https://github.com/google/osv-scanner/releases/download/v$osv_version/osv-scanner_$osv_target$ext"
+          verify "$osv_sha" "osv-scanner$ext"
+          install -m 755 "osv-scanner$ext" "$UV_TOOL_BIN_DIR/osv-scanner$ext"
+          uv tool install --no-build --exclude-newer 2026-11-26T00:00:00Z --python 3.12 semgrep==1.186.0
+          echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
       - &sync
         name: Install the project's gate tools
         run: uv sync --locked

@@ -50,7 +50,6 @@ ruff-format = { required = ["uv"] }
 ruff-check = { required = ["uv"] }
 mypy = { required = ["uv"] }
 tests-and-diff-coverage = { required = ["git", "uv"] }
-# Scanner gates are planned. Their tools are advisory until those gates land.
-gitleaks = { optional = ["gitleaks"] }
-osv-scanner = { optional = ["osv-scanner"] }
-semgrep = { optional = ["semgrep"] }
+gitleaks = { required = ["git", "gitleaks", "uv"] }
+osv-scanner = { required = ["git", "osv-scanner", "uv"] }
+semgrep = { required = ["git", "semgrep", "uv"] }

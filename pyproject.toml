@@ -14,6 +14,7 @@ dependencies = [
 forge = "forge.cli:main"
 forge-hygiene = "forge.hooks.hygiene:main"
 forge-todo-gate = "forge.hooks.todo:main"
+forge-scan = "forge.hooks.scanners:main"
 forge-coverage-gate = "forge.hooks.coverage:main"
 
 [build-system]

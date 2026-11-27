@@ -19,3 +19,4 @@ jobs:
     uses: ./.github/workflows/gates.yml
     with:
       os: '["ubuntu-24.04"]'
+      scanners: true

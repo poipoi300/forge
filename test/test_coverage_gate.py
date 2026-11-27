@@ -34,7 +34,13 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     git(root, "switch", "-qc", "feature")
     monkeypatch.chdir(root)
     monkeypatch.setenv("DIFF_COVER_COMPARE_BRANCH", "main")
-    for name in ("FORGE_COVERAGE_COLLECT", "FORGE_COVERAGE_REPORTS", "FORGE_DIFF_RANGE_NOTATION", "PRE_COMMIT_TO_REF"):
+    for name in (
+        "FORGE_COVERAGE_COLLECT",
+        "FORGE_COVERAGE_REPORTS",
+        "FORGE_DIFF_RANGE_NOTATION",
+        "PRE_COMMIT_TO_REF",
+        "PRE_COMMIT_LOCAL_BRANCH",
+    ):
         monkeypatch.delenv(name, raising=False)
     # Project tools come from this interpreter rather than a uv project.
     tools = Path(sys.executable).parent
@@ -232,16 +238,17 @@ def test_an_initial_push_compares_with_the_empty_tree(repo: Path, monkeypatch: p
     assert coverage.main(["--python"]) == 1
 
 
+@pytest.mark.parametrize("push_ref_env", ["PRE_COMMIT_TO_REF", "PRE_COMMIT_LOCAL_BRANCH"])
 def test_a_push_of_another_ref_is_refused(
-    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], push_ref_env: str
 ) -> None:
     write_python_project(repo, tested=("linux", "windows"))
     commit_all(repo, "add app")
-    monkeypatch.setenv("PRE_COMMIT_TO_REF", "main")
+    monkeypatch.setenv(push_ref_env, "main")
     with pytest.raises(SystemExit):
         coverage.main(["--python"])
     assert "not the checked-out HEAD" in capsys.readouterr().err
-    monkeypatch.setenv("PRE_COMMIT_TO_REF", "feature")
+    monkeypatch.setenv(push_ref_env, "feature")
     assert coverage.main(["--python"]) == 0
 
 

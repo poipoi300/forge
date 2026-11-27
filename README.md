@@ -65,6 +65,9 @@ repos:
     hooks:
       - id: trailing-whitespace
       # ... the other hygiene hooks and no-todo ...
+      - id: gitleaks
+      - id: osv-scanner
+      - id: semgrep
       - id: tests-and-diff-coverage
         args: [--python]  # or [--rust], or both
 ```
@@ -79,6 +82,7 @@ jobs:
   gates:
     uses: poipoi300/forge/.github/workflows/gates.yml@<forge commit SHA>
     with:
+      scanners: true
       apt-packages: libfoo-dev
       rust: true
       cargo-tools: cargo-nextest@0.9.151,cargo-llvm-cov@0.9.1
@@ -88,6 +92,13 @@ The workflow's inputs are listed at the top of `gates.yml`. Each lane runs
 the commit stage and the push stage on its platform; the coverage hook
 collects that platform's reports, and a final job merges every lane's
 reports, so a line counts as covered when any platform runs it.
+
+Install `gitleaks`, `osv-scanner`, and `semgrep` on `PATH` for local pushes.
+Gitleaks scans committed history and redacts findings. OSV-Scanner checks
+resolved dependencies against the OSV database. Semgrep uses the rules shipped
+at the pinned Forge revision and runs with telemetry disabled. CI installs the
+scanners on Linux x64 and ARM64, macOS ARM64, and Windows x64 when
+`scanners: true` is set.
 
 The coverage hook needs coverage.py to record repository-relative paths and
 to know the project's first-party code, so lanes merge and a module no test

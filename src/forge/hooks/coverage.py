@@ -28,6 +28,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, TextIO
 
+from forge.hooks.pushed_tree import require_pushing_head
+
 FAIL_UNDER = 90
 PYTHON_DATA = "python.coverage"
 RUST_DIR = "rust"
@@ -207,22 +209,6 @@ def gate(
     return failed
 
 
-def _require_pushing_head(parser: argparse.ArgumentParser) -> None:
-    # The gate tests the working tree, so a pre-push for another ref would test the wrong code.
-    pushed = os.environ.get("PRE_COMMIT_TO_REF")
-    if not pushed:
-        return
-    head, target = (
-        subprocess.check_output(["git", "rev-parse", f"{ref}^{{commit}}"], text=True).strip()
-        for ref in ("HEAD", pushed)
-    )
-    if head != target:
-        parser.error(f"the push sends {target}, not the checked-out HEAD {head}; push from a checkout of it")
-    changed = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=normal"], text=True)
-    if changed:
-        parser.error(f"the working tree differs from the pushed commit; commit, stash or remove:\n{changed}")
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Collect, gate, or both, as the environment selects."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -258,7 +244,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not lanes:
                 parser.error(f"no lane reports under {reports_dir}")
         else:
-            _require_pushing_head(parser)
+            require_pushing_head(parser)
             lanes = [work / "local"]
             collect(languages, lanes[0])
         return gate(languages, lanes, work, fail_under=args.fail_under, excludes=excludes)

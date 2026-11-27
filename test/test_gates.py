@@ -48,7 +48,12 @@ def test_registry_matches_precommit_config() -> None:
 
 
 def test_push_stage_holds_only_slow_gates() -> None:
-    assert {g.name for g in gates_for_stage(GateStage.PUSH)} == {"tests-and-diff-coverage"}
+    assert {g.name for g in gates_for_stage(GateStage.PUSH)} == {
+        "tests-and-diff-coverage",
+        "gitleaks",
+        "osv-scanner",
+        "semgrep",
+    }
 
 
 def test_forge_runs_exactly_the_published_hooks_in_its_first_block() -> None:
@@ -84,6 +89,22 @@ def test_ci_calls_the_published_workflow_on_this_checkout() -> None:
 
 def steps_by_run(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {step["run"]: step for step in job["steps"] if "run" in step}
+
+
+def test_scanners_run_as_push_gates_and_ci_installs_them_beforehand() -> None:
+    for name in ("gitleaks", "osv-scanner", "semgrep"):
+        hook = config_hooks()[name]
+        assert hook["always_run"] is True
+        assert hook["pass_filenames"] is False
+        assert stages(hook) == ["pre-push"]
+    gates = load_workflow("gates.yml")
+    assert gates["on"]["workflow_call"]["inputs"]["scanners"]["default"] == "false"
+    steps = gates["jobs"]["lane"]["steps"]
+    install = next(step for step in steps if step.get("name") == "Install security scanners")
+    assert install["if"] == "inputs.scanners"
+    names = [step.get("name") for step in steps]
+    assert names.index(install["name"]) < names.index("Push stage, before coverage")
+    assert load_workflow("ci.yml")["jobs"]["gates"]["with"]["scanners"] == "true"
 
 
 def test_published_workflow_runs_both_stages_on_every_lane_as_blocking_steps() -> None:
