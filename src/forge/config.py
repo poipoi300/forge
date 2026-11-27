@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_FILENAME = "forge.toml"
+_COMMIT_ID = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
 class ConfigError(Exception):
@@ -28,6 +30,14 @@ class HarnessConfig:
 
 
 @dataclass(frozen=True)
+class PinnedSeed:
+    """A local fixture repository and the full ID of its starting commit."""
+
+    repository: Path
+    commit: str
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Validated view of forge.toml."""
 
@@ -35,6 +45,7 @@ class ForgeConfig:
     workspace_root: Path
     step_timeout_s: float
     harnesses: dict[str, HarnessConfig]
+    seeds: dict[str, PinnedSeed] = field(default_factory=dict)
 
     def harness(self, name: str | None = None) -> HarnessConfig:
         """Return the named harness, or the default when name is None."""
@@ -87,9 +98,23 @@ def load_config(repo_root: Path) -> ForgeConfig:
     if not isinstance(step_timeout_s, int | float) or step_timeout_s <= 0:
         raise ConfigError("[runner] step_timeout_s must be a positive number")
 
+    seed_tables = raw.get("seed", {})
+    if not isinstance(seed_tables, dict):
+        raise ConfigError("forge.toml seed must be a table of [seed.<project>] entries")
+    seeds: dict[str, PinnedSeed] = {}
+    for project, table in seed_tables.items():
+        repository = table.get("repository") if isinstance(table, dict) else None
+        if not isinstance(repository, str) or not repository or "\0" in repository:
+            raise ConfigError(f"[seed.{project}] repository must be a non-empty local path without NUL characters")
+        commit = table.get("commit")
+        if not isinstance(commit, str) or not _COMMIT_ID.fullmatch(commit):
+            raise ConfigError(f"[seed.{project}] commit must be a full Git commit ID")
+        seeds[project] = PinnedSeed(repository=(repo_root / repository).absolute(), commit=commit.lower())
+
     return ForgeConfig(
         default_harness=default_harness,
         workspace_root=repo_root / workspace_root,
         step_timeout_s=float(step_timeout_s),
         harnesses=harnesses,
+        seeds=seeds,
     )

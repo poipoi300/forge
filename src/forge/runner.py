@@ -1,8 +1,9 @@
 """Execute prompt sequences against an agent harness with step isolation.
 
-Each step runs in its own workspace directory seeded from a copy of the
-previous step's result (copy-forward), so every intermediate state stays on
-disk for inspection and later steps cannot mutate earlier artifacts:
+The initial workspace is empty or seeded from a pinned Git commit. Later
+steps run in their own workspace directories seeded from a copy of the
+previous step's result (copy-forward), so every intermediate state stays
+on disk for inspection:
 
     runs/<project>/step-00-initial/      <- agent built the initial app here
     runs/<project>/step-01-follow-up-1/  <- copy of step-00, then agent ran
@@ -16,6 +17,7 @@ cwd. The runner deliberately knows nothing about what the agent does inside.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -23,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from forge.config import ForgeConfig, HarnessConfig
+from forge.config import ConfigError, ForgeConfig, HarnessConfig, PinnedSeed
 from forge.prompts import ProjectPrompts, PromptStep
 
 # Copied forward between steps only when the agent created them; never seeded
@@ -46,6 +48,7 @@ class StepResult:
     duration_s: float
     exit_code: int | None
     timed_out: bool
+    starting_head: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -67,6 +70,41 @@ def _seed_workspace(previous: Path | None, workspace: Path) -> None:
             shutil.copy2(entry, target)
 
 
+def _checkout_seed(seed: PinnedSeed, workspace: Path) -> tuple[str, dict[str, str]]:
+    env = os.environ.copy()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=workspace, env=env, capture_output=True, encoding="utf-8", errors="replace", check=True
+        ).stdout.strip()
+
+    try:
+        # Git hooks can export variables that redirect Git to the caller's repo.
+        for key in git("rev-parse", "--local-env-vars").splitlines():
+            env.pop(key, None)
+        object_format = "sha256" if len(seed.commit) == 64 else "sha1"
+        git("init", "--quiet", f"--object-format={object_format}", "--template=")
+        # Fetch just the pinned history and keep the fixture's path out of Git metadata.
+        git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            "--",
+            str(seed.repository),
+            seed.commit,
+        )
+        git("checkout", "--quiet", "--detach", seed.commit)
+        head = git("rev-parse", "--verify", "HEAD")
+        if head != seed.commit:
+            raise ConfigError(f"fixture {seed.repository} pin {seed.commit} checked out as {head}")
+    except (OSError, subprocess.CalledProcessError) as e:
+        detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) else str(e)
+        raise ConfigError(f"could not seed from {seed.repository} at {seed.commit}: {detail}") from e
+    return head, env
+
+
 def _render_command(harness: HarnessConfig, step: PromptStep) -> tuple[str, ...]:
     prompt_text = step.text()
     return tuple(
@@ -82,7 +120,7 @@ def run_step(
     step: PromptStep,
     previous_workspace: Path | None,
 ) -> StepResult:
-    """Run one prompt in a fresh workspace seeded from the previous step.
+    """Run one prompt in a fresh workspace seeded from a pin or previous step.
 
     The manifest and full stdout/stderr land in <project>/meta/ regardless of
     outcome; a crashed or timed-out harness still leaves inspectable state.
@@ -94,6 +132,15 @@ def run_step(
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     _seed_workspace(previous_workspace, workspace)
+    starting_head = None
+    env = None
+    if step.index == 0 and previous_workspace is None and (seed := config.seeds.get(project)) is not None:
+        try:
+            starting_head, env = _checkout_seed(seed, workspace)
+        except ConfigError:
+            shutil.rmtree(workspace)
+            raise
+
     command = _render_command(harness, step)
 
     started = datetime.now(tz=UTC)
@@ -106,6 +153,7 @@ def run_step(
         completed = subprocess.run(
             command,
             cwd=workspace,
+            env=env,
             capture_output=True,
             timeout=config.step_timeout_s,
             check=False,
@@ -131,6 +179,7 @@ def run_step(
         duration_s=round(time.monotonic() - clock_start, 3),
         exit_code=exit_code,
         timed_out=timed_out,
+        starting_head=starting_head,
     )
     (meta_dir / f"{step_dir_name}.json").write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
     (meta_dir / f"{step_dir_name}.stdout.txt").write_bytes(stdout)
