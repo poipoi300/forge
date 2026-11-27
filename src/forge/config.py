@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from forge.requirements import ConfigError as ConfigError
 from forge.requirements import HarnessRequirements, Requirements, parse_requirements, read_toml
 
 CONFIG_FILENAME = "forge.toml"
+_COMMIT_ID = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
 
 
 @dataclass(frozen=True)
@@ -17,12 +19,21 @@ class HarnessConfig:
 
     Attributes:
         name: Key of the [harness.<name>] table.
-        command: Argv template; "{prompt}" and "{prompt_path}" are substituted
-            per step before execution.
+        command: Argv template with optional prompt and telemetry paths.
+        telemetry_format: Native output format to read for usage.
     """
 
     name: str
     command: tuple[str, ...]
+    telemetry_format: str | None = None
+
+
+@dataclass(frozen=True)
+class PinnedSeed:
+    """A local fixture repository and the full ID of its starting commit."""
+
+    repository: Path
+    commit: str
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,7 @@ class ForgeConfig:
     step_timeout_s: float
     harnesses: dict[str, HarnessConfig]
     requirements: Requirements = field(default_factory=Requirements)
+    seeds: dict[str, PinnedSeed] = field(default_factory=dict)
 
     def harness(self, name: str | None = None) -> HarnessConfig:
         """Return the named harness, or the default when name is None."""
@@ -69,7 +81,10 @@ def load_config(repo_root: Path) -> ForgeConfig:
         command = table.get("command") if isinstance(table, dict) else None
         if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
             raise ConfigError(f"[harness.{name}] needs a non-empty 'command' list of strings")
-        harnesses[name] = HarnessConfig(name=name, command=tuple(command))
+        telemetry_format = table.get("telemetry_format")
+        if telemetry_format is not None and telemetry_format != "claude-json":
+            raise ConfigError(f"[harness.{name}] telemetry_format must be 'claude-json' when set")
+        harnesses[name] = HarnessConfig(name=name, command=tuple(command), telemetry_format=telemetry_format)
 
     default_harness = runner.get("default_harness")
     if not isinstance(default_harness, str) or default_harness not in harnesses:
@@ -90,10 +105,24 @@ def load_config(repo_root: Path) -> ForgeConfig:
     for name, harness in harnesses.items():
         requirements.harnesses.setdefault(name, HarnessRequirements(harness.command[0]))
 
+    seed_tables = raw.get("seed", {})
+    if not isinstance(seed_tables, dict):
+        raise ConfigError("forge.toml seed must be a table of [seed.<project>] entries")
+    seeds: dict[str, PinnedSeed] = {}
+    for project, table in seed_tables.items():
+        repository = table.get("repository") if isinstance(table, dict) else None
+        if not isinstance(repository, str) or not repository or "\0" in repository:
+            raise ConfigError(f"[seed.{project}] repository must be a non-empty local path without NUL characters")
+        commit = table.get("commit")
+        if not isinstance(commit, str) or not _COMMIT_ID.fullmatch(commit):
+            raise ConfigError(f"[seed.{project}] commit must be a full Git commit ID")
+        seeds[project] = PinnedSeed(repository=(repo_root / repository).absolute(), commit=commit.lower())
+
     return ForgeConfig(
         default_harness=default_harness,
         workspace_root=repo_root / workspace_root,
         step_timeout_s=float(step_timeout_s),
         harnesses=harnesses,
         requirements=requirements,
+        seeds=seeds,
     )

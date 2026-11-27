@@ -18,6 +18,7 @@ def test_repo_config_is_valid() -> None:
     config = load_config(REPO_ROOT)
     assert config.harness().name == config.default_harness
     assert config.workspace_root == REPO_ROOT / "runs"
+    assert config.harness("claude").telemetry_format == "claude-json"
 
 
 def test_missing_file_raises() -> None:
@@ -43,6 +44,15 @@ def test_harness_command_must_be_string_list(tmp_path: Path) -> None:
         load_config(root)
 
 
+def test_unknown_telemetry_format_is_rejected(tmp_path: Path) -> None:
+    root = _write_config(
+        tmp_path,
+        '[runner]\ndefault_harness = "fake"\n[harness.fake]\ncommand = ["echo"]\ntelemetry_format = "text"\n',
+    )
+    with pytest.raises(ConfigError, match="telemetry_format"):
+        load_config(root)
+
+
 def test_unknown_harness_lookup_names_available(tmp_path: Path) -> None:
     root = _write_config(
         tmp_path,
@@ -51,3 +61,18 @@ def test_unknown_harness_lookup_names_available(tmp_path: Path) -> None:
     config = load_config(root)
     with pytest.raises(ConfigError, match="available: a"):
         config.harness("b")
+
+
+@pytest.mark.parametrize(
+    ("seed", "message"),
+    [
+        ('seed = "fixtures"', "seed must be a table"),
+        ('[seed.app]\nrepository = ""', "repository must be a non-empty local path"),
+        (f'[seed.app]\nrepository = "fixture\\u0000repo"\ncommit = "{"1" * 40}"', "without NUL characters"),
+        ('[seed.app]\nrepository = "fixture"\ncommit = "main"', "commit must be a full Git commit ID"),
+    ],
+)
+def test_invalid_seed_config_is_rejected(tmp_path: Path, seed: str, message: str) -> None:
+    root = _write_config(tmp_path, f'{seed}\n[runner]\ndefault_harness = "a"\n[harness.a]\ncommand = ["echo"]\n')
+    with pytest.raises(ConfigError, match=message):
+        load_config(root)

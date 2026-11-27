@@ -1,60 +1,121 @@
-"""Execute prompt sequences against an agent harness with step isolation.
-
-Each step runs in its own workspace directory seeded from a copy of the
-previous step's result (copy-forward), so every intermediate state stays on
-disk for inspection and later steps cannot mutate earlier artifacts:
-
-    runs/<project>/step-00-initial/      <- agent built the initial app here
-    runs/<project>/step-01-follow-up-1/  <- copy of step-00, then agent ran
-    runs/<project>/meta/step-00-initial.json, .stdout.txt, .stderr.txt
-
-The harness is any CLI configured in forge.toml; the runner substitutes
-{prompt} / {prompt_path} into its argv and runs it with the step workspace as
-cwd. The runner deliberately knows nothing about what the agent does inside.
-"""
+"""Execute isolated prompt trajectories and persist their outcomes."""
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import mean
+from typing import Literal
+from uuid import uuid4
 
-from forge.config import ForgeConfig, HarnessConfig
-from forge.prompts import ProjectPrompts, PromptStep
+from forge.config import ConfigError, ForgeConfig, HarnessConfig, PinnedSeed
+from forge.prompts import ProjectPrompts, PromptStep, validate_project_name
+from forge.telemetry import ExitReason, Usage, read_telemetry
 
-# Copied forward between steps only when the agent created them; never seeded
-# into a fresh step from the forge repo itself.
+# Runtime caches and repository metadata do not belong in the next snapshot.
 _SKIP_COPY = {".git", "node_modules", ".venv", "target", "__pycache__"}
+_PLACEHOLDER = re.compile(r"\{(prompt|prompt_path|telemetry_path)\}")
+
+type SkipReason = Literal["prior_step_failed", "through_step"]
 
 
 @dataclass(frozen=True)
 class StepResult:
-    """Outcome of one agent invocation, persisted as the step manifest."""
+    """Attempted or skipped step, with log names relative to its manifest."""
 
+    run_id: str
     project: str
+    harness: str
     step_index: int
     step_name: str
     prompt_file: str
-    harness: str
-    command: tuple[str, ...]
-    workspace: str
-    started_at: str
-    duration_s: float
-    exit_code: int | None
-    timed_out: bool
+    skip_reason: SkipReason | None = None
+    command: tuple[str, ...] | None = None
+    workspace: str | None = None
+    starting_head: str | None = None
+    started_at: str | None = None
+    duration_s: float | None = None
+    exit_reason: ExitReason | None = None
+    exit_code: int | None = None
+    stdout_log: str | None = None
+    stderr_log: str | None = None
+    telemetry: Usage = field(default_factory=Usage)
 
     @property
     def ok(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
+        return self.exit_reason == "ok"
+
+    @property
+    def attempted(self) -> bool:
+        return self.skip_reason is None
+
+    @property
+    def timed_out(self) -> bool:
+        return self.exit_reason == "timeout"
+
+    def manifest(self) -> dict[str, object]:
+        return {
+            **asdict(self),
+            "attempted": self.attempted,
+            "timed_out": self.timed_out,
+            "telemetry": self.telemetry.manifest(),
+        }
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """One invocation of a project's full or capped prompt sequence."""
+
+    run_id: str
+    project: str
+    harness: str
+    started_at: str
+    duration_s: float
+    through_step: int | None
+    exit_reason: ExitReason
+    steps: tuple[StepResult, ...]
+    manifest_path: Path
+
+    def manifest(self) -> dict[str, object]:
+        usage = [step.telemetry for step in self.steps if step.attempted]
+        costs = [measurement.cost_usd for measurement in usage if measurement.cost_usd is not None]
+        return {
+            "schema_version": 1,
+            "run_id": self.run_id,
+            "project": self.project,
+            "harness": self.harness,
+            "started_at": self.started_at,
+            "duration_s": self.duration_s,
+            "through_step": self.through_step,
+            "exit_reason": self.exit_reason,
+            "attempted_steps": len(usage),
+            "skipped_steps": len(self.steps) - len(usage),
+            "coverage": {
+                "tokens": sum(measurement.tokens is not None for measurement in usage),
+                "cost_usd": len(costs),
+                "quota_percent": sum(measurement.quota_percent is not None for measurement in usage),
+            },
+            "cost_usd_per_attempted_task": mean(costs) if costs and len(costs) == len(usage) else None,
+            "steps": [step.manifest() for step in self.steps],
+        }
+
+
+def _write_manifest(path: Path, data: dict[str, object]) -> None:
+    temp = path.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    temp.replace(path)
 
 
 def _seed_workspace(previous: Path | None, workspace: Path) -> None:
     """Create the step workspace, copying the previous step's tree if any."""
-    workspace.mkdir(parents=True, exist_ok=False)
+    workspace.mkdir()
     if previous is None:
         return
     for entry in previous.iterdir():
@@ -67,45 +128,80 @@ def _seed_workspace(previous: Path | None, workspace: Path) -> None:
             shutil.copy2(entry, target)
 
 
-def _render_command(harness: HarnessConfig, step: PromptStep) -> tuple[str, ...]:
-    prompt_text = step.text()
-    return tuple(
-        part.replace("{prompt}", prompt_text).replace("{prompt_path}", str(step.path.resolve()))
-        for part in harness.command
-    )
+def _checkout_seed(seed: PinnedSeed, workspace: Path) -> tuple[str, dict[str, str]]:
+    env = os.environ.copy()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=workspace, env=env, capture_output=True, encoding="utf-8", errors="replace", check=True
+        ).stdout.strip()
+
+    try:
+        # Git hooks can export variables that redirect Git to the caller's repo.
+        for key in git("rev-parse", "--local-env-vars").splitlines():
+            env.pop(key, None)
+        object_format = "sha256" if len(seed.commit) == 64 else "sha1"
+        git("init", "--quiet", f"--object-format={object_format}", "--template=")
+        # Fetch just the pinned history and keep the fixture's path out of Git metadata.
+        git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            "--",
+            str(seed.repository),
+            seed.commit,
+        )
+        git("checkout", "--quiet", "--detach", seed.commit)
+        head = git("rev-parse", "--verify", "HEAD")
+        if head != seed.commit:
+            raise ConfigError(f"fixture {seed.repository} pin {seed.commit} checked out as {head}")
+    except (OSError, subprocess.CalledProcessError) as e:
+        detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) else str(e)
+        raise ConfigError(f"could not seed from {seed.repository} at {seed.commit}: {detail}") from e
+    return head, env
 
 
-def run_step(
+def _render_command(harness: HarnessConfig, step: PromptStep, telemetry_path: Path) -> tuple[str, ...]:
+    fields = {
+        "prompt": step.text(),
+        "prompt_path": str(step.path.resolve()),
+        "telemetry_path": str(telemetry_path),
+    }
+    return tuple(_PLACEHOLDER.sub(lambda match: fields[match[1]], part) for part in harness.command)
+
+
+def _run_step(
     config: ForgeConfig,
     harness: HarnessConfig,
-    project: str,
     step: PromptStep,
-    previous_workspace: Path | None,
+    result: StepResult,
+    workspace: Path,
+    previous: Path | None,
+    meta_dir: Path,
 ) -> StepResult:
-    """Run one prompt in a fresh workspace seeded from the previous step.
-
-    The manifest and full stdout/stderr land in <project>/meta/ regardless of
-    outcome; a crashed or timed-out harness still leaves inspectable state.
-    """
-    step_dir_name = f"step-{step.index:02d}-{step.name}"
-    project_root = config.workspace_root / project
-    workspace = project_root / step_dir_name
-    meta_dir = project_root / "meta"
-    meta_dir.mkdir(parents=True, exist_ok=True)
-
-    _seed_workspace(previous_workspace, workspace)
-    command = _render_command(harness, step)
-
+    """Attempt a step and persist subprocess logs even on failure."""
+    name = workspace.name
+    telemetry_path = meta_dir / f"{name}.telemetry.json"
     started = datetime.now(tz=UTC)
     clock_start = time.monotonic()
-    timed_out = False
+    command: tuple[str, ...] | None = None
     exit_code: int | None = None
+    exit_reason: ExitReason = "harness_error"
     stdout = b""
     stderr = b""
+    starting_head = None
+    env = None
     try:
+        _seed_workspace(previous, workspace)
+        if step.index == 0 and (seed := config.seeds.get(result.project)) is not None:
+            starting_head, env = _checkout_seed(seed, workspace)
+        command = _render_command(harness, step, telemetry_path)
         completed = subprocess.run(
             command,
             cwd=workspace,
+            env=env,
             capture_output=True,
             timeout=config.step_timeout_s,
             check=False,
@@ -113,29 +209,43 @@ def run_step(
         exit_code = completed.returncode
         stdout, stderr = completed.stdout, completed.stderr
     except subprocess.TimeoutExpired as e:
-        timed_out = True
+        exit_reason = "timeout"
         stdout = e.stdout or b""
         stderr = e.stderr or b""
-    except FileNotFoundError:
-        stderr = f"harness executable not found: {command[0]}".encode()
+    except ConfigError as e:
+        shutil.rmtree(workspace)
+        stderr = str(e).encode(errors="backslashreplace")
+    except FileNotFoundError as e:
+        stderr = f"harness input or executable not found: {e}".encode(errors="backslashreplace")
+    except (OSError, ValueError) as e:
+        stderr = f"could not prepare or start harness: {e}".encode(errors="backslashreplace")
 
-    result = StepResult(
-        project=project,
-        step_index=step.index,
-        step_name=step.name,
-        prompt_file=str(step.path),
-        harness=harness.name,
-        command=command,
-        workspace=str(workspace),
-        started_at=started.isoformat(),
-        duration_s=round(time.monotonic() - clock_start, 3),
-        exit_code=exit_code,
-        timed_out=timed_out,
+    duration = time.monotonic() - clock_start
+    telemetry, reported_reason = read_telemetry(
+        telemetry_path, stdout if harness.telemetry_format == "claude-json" else b""
     )
-    (meta_dir / f"{step_dir_name}.json").write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
-    (meta_dir / f"{step_dir_name}.stdout.txt").write_bytes(stdout)
-    (meta_dir / f"{step_dir_name}.stderr.txt").write_bytes(stderr)
-    return result
+    if exit_code is not None:
+        exit_reason = "ok" if exit_code == 0 else "crash"
+        if reported_reason is not None and exit_code >= 0:
+            exit_reason = reported_reason
+
+    stdout_log = f"{name}.stdout.txt"
+    stderr_log = f"{name}.stderr.txt"
+    (meta_dir / stdout_log).write_bytes(stdout)
+    (meta_dir / stderr_log).write_bytes(stderr)
+    return replace(
+        result,
+        command=command,
+        workspace=str(workspace) if workspace.is_dir() else None,
+        starting_head=starting_head,
+        started_at=started.isoformat(),
+        duration_s=round(duration, 3),
+        exit_reason=exit_reason,
+        exit_code=exit_code,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        telemetry=telemetry,
+    )
 
 
 def run_project(
@@ -143,33 +253,51 @@ def run_project(
     project_prompts: ProjectPrompts,
     harness_name: str | None = None,
     through_step: int | None = None,
-) -> list[StepResult]:
-    """Run a project's prompt sequence, stopping early on a failed step.
+) -> RunResult:
+    """Run a trajectory in a fresh directory and record every planned step.
 
-    Args:
-        through_step: Last step index to run (inclusive); None runs all.
-
-    Raises:
-        FileExistsError: when the project already has workspaces under
-            workspace_root — runs are append-only; delete or rename the old
-            run directory to rerun.
+    through_step is the last allowed step index, inclusive. A failed step
+    stops execution because later steps build on the preceding step's output.
     """
+    project = project_prompts.project
+    validate_project_name(project)
     harness = config.harness(harness_name)
-    project_root = config.workspace_root / project_prompts.project
-    existing = [p.name for p in project_root.glob("step-*")] if project_root.exists() else []
-    if existing:
-        raise FileExistsError(
-            f"{project_root} already contains {', '.join(sorted(existing))}; move or delete the previous run first"
-        )
+    started = datetime.now(tz=UTC)
+    clock_start = time.monotonic()
+    run_id = str(uuid4())
+    run_root = config.workspace_root.resolve() / project / run_id
+    run_root.mkdir(parents=True, exist_ok=False)
+    meta_dir = run_root / "meta"
+    meta_dir.mkdir()
 
     results: list[StepResult] = []
     previous: Path | None = None
+    exit_reason: ExitReason = "ok"
     for step in project_prompts.steps:
+        result = StepResult(run_id, project, harness.name, step.index, step.name, str(step.path))
+        workspace = run_root / f"step-{step.index:02d}-{step.name}"
         if through_step is not None and step.index > through_step:
-            break
-        result = run_step(config, harness, project_prompts.project, step, previous)
+            result = replace(result, skip_reason="through_step")
+        elif exit_reason != "ok":
+            result = replace(result, skip_reason="prior_step_failed")
+        else:
+            result = _run_step(config, harness, step, result, workspace, previous, meta_dir)
+            assert result.exit_reason is not None
+            exit_reason = result.exit_reason
+            previous = workspace
+        _write_manifest(meta_dir / f"{workspace.name}.json", result.manifest())
         results.append(result)
-        if not result.ok:
-            break
-        previous = Path(result.workspace)
-    return results
+
+    run = RunResult(
+        run_id=run_id,
+        project=project,
+        harness=harness.name,
+        started_at=started.isoformat(),
+        duration_s=round(time.monotonic() - clock_start, 3),
+        through_step=through_step,
+        exit_reason=exit_reason,
+        steps=tuple(results),
+        manifest_path=meta_dir / "run.json",
+    )
+    _write_manifest(run.manifest_path, run.manifest())
+    return run
