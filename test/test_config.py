@@ -61,3 +61,18 @@ def test_unknown_harness_lookup_names_available(tmp_path: Path) -> None:
     config = load_config(root)
     with pytest.raises(ConfigError, match="available: a"):
         config.harness("b")
+
+
+@pytest.mark.parametrize(
+    ("seed", "message"),
+    [
+        ('seed = "fixtures"', "seed must be a table"),
+        ('[seed.app]\nrepository = ""', "repository must be a non-empty local path"),
+        (f'[seed.app]\nrepository = "fixture\\u0000repo"\ncommit = "{"1" * 40}"', "without NUL characters"),
+        ('[seed.app]\nrepository = "fixture"\ncommit = "main"', "commit must be a full Git commit ID"),
+    ],
+)
+def test_invalid_seed_config_is_rejected(tmp_path: Path, seed: str, message: str) -> None:
+    root = _write_config(tmp_path, f'{seed}\n[runner]\ndefault_harness = "a"\n[harness.a]\ncommand = ["echo"]\n')
+    with pytest.raises(ConfigError, match=message):
+        load_config(root)

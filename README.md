@@ -37,28 +37,89 @@ on that answer.
 
 ## What's here now
 
-The first slice: repo skeleton plus the deterministic gate layer, ported from a
-proven setup.
+The deterministic gate layer, published for projects to use by reference.
 
 | Piece | Purpose |
 |---|---|
-| `.pre-commit-config.yaml` | Local gates: hygiene + format/lint/types on commit, tests + diff-coverage on push |
-| `tools/repo_hygiene.py` | Zero-network reimplementations of the standard pre-commit hygiene hooks |
-| `tools/coverage_gate.sh` | Test suite under coverage, then ≥90% coverage required on changed lines |
-| `.github/workflows/ci.yml` | The same gates enforced server-side on every push/PR |
+| `.pre-commit-hooks.yaml` | forge's gate hooks: repo hygiene, the TODO gate, and tests under coverage with ≥90% required on changed lines |
+| `src/forge/hooks/` | The hooks' implementations |
+| `.github/workflows/gates.yml` | Reusable CI: every hook on each platform lane, then one coverage gate over all lanes' merged reports |
+| `.pre-commit-config.yaml`, `.github/workflows/ci.yml` | forge's own gates, run from this checkout |
+
+## Using forge from a project
+
+A project never copies forge's files. It pins a forge commit in two places
+and moves both pins together. forge is public, so neither needs a
+credential. Workflows that call an older `gates.yml` with a `forge-token`
+secret must drop that `secrets:` mapping in the same change that moves the
+pins, because the current workflow no longer declares it.
+
+`.pre-commit-config.yaml`:
+
+```yaml
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
+repos:
+  - repo: https://github.com/poipoi300/forge
+    rev: <forge commit SHA>
+    hooks:
+      - id: trailing-whitespace
+      # ... the other hygiene hooks and no-todo ...
+      - id: tests-and-diff-coverage
+        args: [--python]  # or [--rust], or both
+```
+
+`.github/workflows/ci.yml`:
+
+```yaml
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  gates:
+    uses: poipoi300/forge/.github/workflows/gates.yml@<forge commit SHA>
+    with:
+      apt-packages: libfoo-dev
+      rust: true
+      cargo-tools: cargo-nextest@0.9.151,cargo-llvm-cov@0.9.1
+```
+
+The workflow's inputs are listed at the top of `gates.yml`. Each lane runs
+the commit stage and the push stage on its platform; the coverage hook
+collects that platform's reports, and a final job merges every lane's
+reports, so a line counts as covered when any platform runs it.
+
+The coverage hook needs coverage.py to record repository-relative paths and
+to know the project's first-party code, so lanes merge and a module no test
+imports still counts. It refuses to run without both:
+
+```toml
+[tool.coverage.run]
+relative_files = true
+source = ["src"]  # directories, not package names
+
+[tool.coverage.report]
+include_namespace_packages = true
+```
+
+Locally the hook tests the checked-out tree, so it refuses a push of any
+other ref or with staged, unstaged or untracked changes; push from a clean
+checkout of what you push. pre-commit hands a pre-push hook only the first ref of a multi-ref
+push, so push one ref at a time. Call `gates.yml` once per
+workflow run: its artifact names are per run.
 
 ## Setup
 
 ```sh
-uv sync --group dev
+uv sync --locked
 uv run pre-commit install --install-hooks -t pre-commit -t pre-push
 ```
 
 Run all gates manually:
 
 ```sh
-uv run pre-commit run --all-files
-bash tools/coverage_gate.sh
+uv run --locked pre-commit run --all-files
+uv run --locked pre-commit run --hook-stage pre-push --all-files
 ```
 
 ## Evaluation runs
@@ -98,3 +159,26 @@ has a true flag. Run-level coverage counts attempts with a measurement for
 each unit. `cost_usd_per_attempted_task` divides measured dollars by all
 attempted steps, including failures, and is null when any attempt lacks
 dollar coverage or when there were no attempts.
+
+## Start a task from a pinned commit
+
+Add a seed for the project in `forge.toml`. For a project with a prompt at
+`prompts/my-task.md`, use the following table and replace the example commit
+with the full commit ID from your local fixture repository.
+
+```toml
+[seed.my-task]
+repository = "fixtures/my-task"
+commit = "0123456789abcdef0123456789abcdef01234567"
+```
+
+Run `uv run forge run my-task`. Relative fixture paths are relative to
+`forge.toml`. The initial workspace checks out the pinned commit with a detached
+HEAD and contains its Git ancestry. The initial manifest at
+`runs/my-task/<run_id>/meta/step-00-initial.json` records the Git SHA in
+`starting_head` before the harness runs. Follow-ups copy the previous workspace's files without
+its Git metadata. Steps without a Git seed record `starting_head` as `null`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

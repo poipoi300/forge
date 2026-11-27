@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from statistics import mean
 from typing import Literal
 from uuid import uuid4
 
-from forge.config import ForgeConfig, HarnessConfig
+from forge.config import ConfigError, ForgeConfig, HarnessConfig, PinnedSeed
 from forge.prompts import ProjectPrompts, PromptStep, validate_project_name
 from forge.telemetry import ExitReason, Usage, read_telemetry
 
@@ -38,6 +39,7 @@ class StepResult:
     skip_reason: SkipReason | None = None
     command: tuple[str, ...] | None = None
     workspace: str | None = None
+    starting_head: str | None = None
     started_at: str | None = None
     duration_s: float | None = None
     exit_reason: ExitReason | None = None
@@ -126,6 +128,41 @@ def _seed_workspace(previous: Path | None, workspace: Path) -> None:
             shutil.copy2(entry, target)
 
 
+def _checkout_seed(seed: PinnedSeed, workspace: Path) -> tuple[str, dict[str, str]]:
+    env = os.environ.copy()
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=workspace, env=env, capture_output=True, encoding="utf-8", errors="replace", check=True
+        ).stdout.strip()
+
+    try:
+        # Git hooks can export variables that redirect Git to the caller's repo.
+        for key in git("rev-parse", "--local-env-vars").splitlines():
+            env.pop(key, None)
+        object_format = "sha256" if len(seed.commit) == 64 else "sha1"
+        git("init", "--quiet", f"--object-format={object_format}", "--template=")
+        # Fetch just the pinned history and keep the fixture's path out of Git metadata.
+        git(
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-write-fetch-head",
+            "--",
+            str(seed.repository),
+            seed.commit,
+        )
+        git("checkout", "--quiet", "--detach", seed.commit)
+        head = git("rev-parse", "--verify", "HEAD")
+        if head != seed.commit:
+            raise ConfigError(f"fixture {seed.repository} pin {seed.commit} checked out as {head}")
+    except (OSError, subprocess.CalledProcessError) as e:
+        detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) else str(e)
+        raise ConfigError(f"could not seed from {seed.repository} at {seed.commit}: {detail}") from e
+    return head, env
+
+
 def _render_command(harness: HarnessConfig, step: PromptStep, telemetry_path: Path) -> tuple[str, ...]:
     fields = {
         "prompt": step.text(),
@@ -154,12 +191,17 @@ def _run_step(
     exit_reason: ExitReason = "harness_error"
     stdout = b""
     stderr = b""
+    starting_head = None
+    env = None
     try:
         _seed_workspace(previous, workspace)
+        if step.index == 0 and (seed := config.seeds.get(result.project)) is not None:
+            starting_head, env = _checkout_seed(seed, workspace)
         command = _render_command(harness, step, telemetry_path)
         completed = subprocess.run(
             command,
             cwd=workspace,
+            env=env,
             capture_output=True,
             timeout=config.step_timeout_s,
             check=False,
@@ -170,6 +212,9 @@ def _run_step(
         exit_reason = "timeout"
         stdout = e.stdout or b""
         stderr = e.stderr or b""
+    except ConfigError as e:
+        shutil.rmtree(workspace)
+        stderr = str(e).encode(errors="backslashreplace")
     except FileNotFoundError as e:
         stderr = f"harness input or executable not found: {e}".encode(errors="backslashreplace")
     except (OSError, ValueError) as e:
@@ -192,6 +237,7 @@ def _run_step(
         result,
         command=command,
         workspace=str(workspace) if workspace.is_dir() else None,
+        starting_head=starting_head,
         started_at=started.isoformat(),
         duration_s=round(duration, 3),
         exit_reason=exit_reason,

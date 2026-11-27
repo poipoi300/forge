@@ -1,0 +1,100 @@
+# forge's gate hooks. Projects reference them at a pinned forge revision:
+#
+#   - repo: https://github.com/poipoi300/forge
+#     rev: <forge commit SHA>
+#     hooks:
+#       - id: trailing-whitespace
+#       - id: tests-and-diff-coverage
+#         args: [--python]
+#
+# forge's own .pre-commit-config.yaml runs the same hooks from this checkout;
+# test/test_gates.py holds the two to the same definitions.
+
+- id: trailing-whitespace
+  name: trailing whitespace
+  entry: forge-hygiene trailing-whitespace
+  language: python
+  types: [text]
+  exclude: '\.(md|txt)$'  # keep hard line breaks in prose
+  minimum_pre_commit_version: "4.0.0"
+
+- id: end-of-file-fixer
+  name: end of file fixer
+  entry: forge-hygiene end-of-file-fixer
+  language: python
+  types: [text]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-merge-conflict
+  name: check for merge conflict markers
+  entry: forge-hygiene check-merge-conflict
+  language: python
+  types: [text]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-case-conflict
+  name: check for case-insensitive filename collisions
+  entry: forge-hygiene check-case-conflict
+  language: python
+  pass_filenames: false
+  always_run: true
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-added-large-files
+  name: check for added large files (>2MB)
+  entry: forge-hygiene check-added-large-files --max-kb=2048
+  language: python
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-yaml
+  name: check yaml syntax
+  entry: forge-hygiene check-yaml
+  language: python
+  types: [yaml]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-toml
+  name: check toml syntax
+  entry: forge-hygiene check-toml
+  language: python
+  types: [toml]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: check-json
+  name: check json syntax
+  entry: forge-hygiene check-json
+  language: python
+  types: [json]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: debug-statements
+  name: check for debug statements
+  entry: forge-hygiene debug-statements
+  language: python
+  types: [python]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: detect-private-key
+  name: detect private keys
+  entry: forge-hygiene detect-private-key
+  language: python
+  types: [text]
+  minimum_pre_commit_version: "4.0.0"
+
+- id: no-todo
+  name: reject TODO comments and files (track work in issues)
+  entry: forge-todo-gate
+  language: python
+  types: [text]
+  minimum_pre_commit_version: "4.0.0"
+
+# Pass the project's languages as args: [--python], [--rust] or both.
+- id: tests-and-diff-coverage
+  name: tests under coverage + diff-cover (>=90% on changed lines)
+  entry: forge-coverage-gate
+  language: python
+  pass_filenames: false
+  always_run: true
+  require_serial: true
+  stages: [pre-push]
+  minimum_pre_commit_version: "4.0.0"
