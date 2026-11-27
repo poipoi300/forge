@@ -1,65 +1,22 @@
-# Durable enforcement of the anti-slop gates. Pre-commit hooks can be bypassed
-# with --no-verify; this runs the same checks on every push and PR so nothing
-# lands unchecked.
+# forge's own CI: the reusable gates workflow every project calls, run on
+# this checkout. forge runs on Ubuntu only.
 name: CI
-
-permissions:
-  contents: read
 
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-and-types:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
-        with:
-          enable-cache: true
-      - name: Install dev tools
-        run: uv sync --locked --group dev
-      - name: ruff format (check only)
-        run: uv run ruff format --check .
-      - name: ruff check
-        run: uv run ruff check .
-      - name: mypy
-        run: uv run mypy .
-
-  push-gates:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          fetch-depth: 0  # Gitleaks and diff-cover both need commit history.
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
-        with:
-          enable-cache: true
-      - name: Install dev tools
-        run: uv sync --locked --group dev
-      - name: Install Gitleaks, OSV-Scanner, and Semgrep
-        shell: bash
-        working-directory: ${{ runner.temp }}
-        env:
-          UV_TOOL_BIN_DIR: ${{ runner.temp }}/forge-scanners
-        run: |
-          mkdir -p "$UV_TOOL_BIN_DIR"
-          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o gitleaks.tar.gz
-          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz' | sha256sum -c
-          tar -xzf gitleaks.tar.gz -C "$UV_TOOL_BIN_DIR" gitleaks
-          curl -fsSL https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64 -o osv-scanner
-          echo 'fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8  osv-scanner' | sha256sum -c
-          install -m 755 osv-scanner "$UV_TOOL_BIN_DIR/osv-scanner"
-          uv tool install --python 3.12 semgrep==1.186.0
-          echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
-      - name: Run pre-push gates
-        run: uv run --locked pre-commit run --hook-stage pre-push --all-files
+  gates:
+    uses: ./.github/workflows/gates.yml
+    with:
+      os: '["ubuntu-24.04"]'
+      scanners: true

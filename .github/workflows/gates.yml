@@ -1,0 +1,292 @@
+# forge's gates for any project, called by reference:
+#
+#   jobs:
+#     gates:
+#       uses: poipoi300/forge/.github/workflows/gates.yml@<forge commit SHA>
+#       with: { ... project inputs ... }
+#
+# The project's `.pre-commit-config.yaml` owns every gate command. Each lane
+# runs the commit stage and the push stage through pre-commit on its own
+# platform, with the coverage hook collecting that platform's reports; the
+# coverage job then merges every lane and gates the changed lines once.
+name: forge gates
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: JSON array of runner images, one lane each.
+        type: string
+        default: '["ubuntu-24.04", "macos-15", "windows-2025"]'
+      apt-packages:
+        description: Space-separated apt packages for Linux lanes.
+        type: string
+        default: ""
+      brew-packages:
+        description: Space-separated Homebrew formulae for macOS lanes.
+        type: string
+        default: ""
+      choco-packages:
+        description: Space-separated Chocolatey packages for Windows lanes.
+        type: string
+        default: ""
+      rust:
+        description: Install the toolchain rust-toolchain.toml pins, with llvm-tools for coverage.
+        type: boolean
+        default: false
+      cargo-tools:
+        description: Comma-separated cargo tools for taiki-e/install-action, each pinned (cargo-nextest@0.9.151).
+        type: string
+        default: ""
+      scanners:
+        description: Install Gitleaks, OSV-Scanner, and Semgrep on each test lane.
+        type: boolean
+        default: false
+      uv-version:
+        description: The uv version to install; empty reads the project's required-version.
+        type: string
+        default: ""
+      env:
+        description: KEY=VALUE lines exported to every step of every job.
+        type: string
+        default: ""
+      free-disk-space:
+        description: Remove unused SDKs from Linux runners before building.
+        type: boolean
+        default: false
+      prune-paths:
+        description: Space-separated paths removed after the other push gates, before coverage collection.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lane:
+    name: gates (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Hygiene hooks see the committed bytes, not a CRLF checkout.
+      - &keep-line-endings
+        name: Keep line endings as committed
+        run: git config --global core.autocrlf false
+      - &checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - &setup-uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: ${{ inputs.uv-version }}
+          enable-cache: true
+      - &export-env
+        name: Export the project's environment
+        if: inputs.env != ''
+        env:
+          PROJECT_ENV: ${{ inputs.env }}
+        # One KEY=VALUE per line; names compare case-insensitively, as Windows does.
+        run: |
+          while IFS= read -r line || [[ -n $line ]]; do
+            [[ -z ${line//[[:space:]]/} ]] && continue
+            if [[ ! $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::env input lines must be KEY=VALUE: $line"
+              exit 1
+            fi
+            name=$(printf '%s' "${line%%=*}" | tr '[:lower:]' '[:upper:]')
+            case $name in
+              SKIP | FORGE_* | DIFF_COVER_*)
+                echo "::error::the env input may not set $name"
+                exit 1
+                ;;
+            esac
+            printf '%s\n' "$line" >> "$GITHUB_ENV"
+          done <<< "$PROJECT_ENV"
+      - name: Free runner disk space
+        if: inputs.free-disk-space && runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+      - &apt-packages
+        name: Install apt packages
+        if: runner.os == 'Linux' && inputs.apt-packages != ''
+        env:
+          PACKAGES: ${{ inputs.apt-packages }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $PACKAGES
+      - name: Install Homebrew packages
+        if: runner.os == 'macOS' && inputs.brew-packages != ''
+        env:
+          PACKAGES: ${{ inputs.brew-packages }}
+        run: brew install $PACKAGES
+      - name: Install Chocolatey packages
+        if: runner.os == 'Windows' && inputs.choco-packages != ''
+        env:
+          PACKAGES: ${{ inputs.choco-packages }}
+        run: choco install -y --no-progress $PACKAGES
+      - &rust-toolchain
+        name: Install the pinned Rust toolchain
+        if: inputs.rust
+        run: |
+          rustup toolchain install
+          rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: inputs.rust
+      - uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        if: inputs.cargo-tools != ''
+        with:
+          tool: ${{ inputs.cargo-tools }}
+      - name: Install security scanners
+        if: inputs.scanners
+        working-directory: ${{ runner.temp }}
+        env:
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/forge-scanners
+          UV_TOOL_DIR: ${{ runner.temp }}/forge-scanner-tools
+        run: |
+          gitleaks_version=8.30.1
+          osv_version=2.7.1
+          ext=
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)
+              leak_target=linux_x64; osv_target=linux_amd64
+              leak_sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+              osv_sha=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8 ;;
+            Linux-ARM64)
+              leak_target=linux_arm64; osv_target=linux_arm64
+              leak_sha=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+              osv_sha=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81 ;;
+            macOS-ARM64)
+              leak_target=darwin_arm64; osv_target=darwin_arm64
+              leak_sha=b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5
+              osv_sha=b22c02877a811c8f78956e8643efa554932b7378f590d13f8e97d4e9448a29f3 ;;
+            Windows-X64)
+              leak_target=windows_x64; osv_target=windows_amd64; ext=.exe
+              leak_sha=d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e
+              osv_sha=7121dcf420aefbbf89a7f0050c4d3094e079ff93afd334dfc96f16b02ec85800 ;;
+            *)
+              echo "::error::scanner installers do not support $RUNNER_OS-$RUNNER_ARCH"
+              exit 1 ;;
+          esac
+          verify() {
+            if [[ $RUNNER_OS == macOS ]]; then
+              printf '%s  %s\n' "$1" "$2" | shasum -a 256 -c
+            else
+              printf '%s  %s\n' "$1" "$2" | sha256sum -c
+            fi
+          }
+          archive="gitleaks_${gitleaks_version}_${leak_target}.tar.gz"
+          if [[ -n $ext ]]; then archive="gitleaks_${gitleaks_version}_${leak_target}.zip"; fi
+          mkdir -p "$UV_TOOL_BIN_DIR"
+          curl -fsSLo "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v$gitleaks_version/$archive"
+          verify "$leak_sha" "$archive"
+          if [[ -n $ext ]]; then
+            unzip -oq "$archive" "gitleaks$ext" -d "$UV_TOOL_BIN_DIR"
+          else
+            tar -xzf "$archive" -C "$UV_TOOL_BIN_DIR" gitleaks
+          fi
+          curl -fsSLo "osv-scanner$ext" "https://github.com/google/osv-scanner/releases/download/v$osv_version/osv-scanner_$osv_target$ext"
+          verify "$osv_sha" "osv-scanner$ext"
+          install -m 755 "osv-scanner$ext" "$UV_TOOL_BIN_DIR/osv-scanner$ext"
+          uv tool install --no-build --exclude-newer 2026-11-26T00:00:00Z --python 3.12 semgrep==1.186.0
+          echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+      - &sync
+        name: Install the project's gate tools
+        run: uv sync --locked
+      - name: Commit stage
+        run: uv run --locked pre-commit run --hook-stage pre-commit --all-files
+      - name: Push stage, before coverage
+        env:
+          SKIP: tests-and-diff-coverage
+        run: uv run --locked pre-commit run --hook-stage pre-push --all-files
+      - name: Free the earlier builds before coverage
+        if: inputs.prune-paths != ''
+        env:
+          PATHS: ${{ inputs.prune-paths }}
+        run: |
+          rm -rf $PATHS
+          df -h .
+      # Each artifact holds one lane directory, so the merged download has one per lane.
+      - name: Collect this platform's coverage
+        env:
+          FORGE_COVERAGE_COLLECT: ${{ runner.temp }}/forge-coverage/lane-${{ matrix.os }}
+        run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: forge-coverage-${{ matrix.os }}
+          path: ${{ runner.temp }}/forge-coverage
+          if-no-files-found: error
+
+  coverage:
+    needs: lane
+    runs-on: ubuntu-24.04
+    steps:
+      - *keep-line-endings
+      - *checkout
+      - *setup-uv
+      - *export-env
+      # The project's install may build native code, as on the lanes.
+      - *apt-packages
+      - *rust-toolchain
+      - *sync
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: forge-coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/forge-coverage
+      # A failed rerun can reuse a lane whose artifact expired; gate only a full set.
+      - name: Check every lane sent its reports
+        env:
+          OS: ${{ inputs.os }}
+          REPORTS: ${{ runner.temp }}/forge-coverage
+        run: |
+          if ! jq -e 'length == (unique | length)' <<< "$OS" >/dev/null; then
+            echo "::error::the os input lists a runner image twice; each lane needs its own"
+            exit 1
+          fi
+          while IFS= read -r os; do
+            if [[ ! -d $REPORTS/lane-$os ]]; then
+              echo "::error::the $os lane sent no coverage reports"
+              exit 1
+            fi
+          done < <(jq -r '.[]' <<< "$OS")
+      # A pull request compares with its base; a push to the default branch
+      # compares its two tips, which survives a force push, and the first push
+      # compares with the empty tree; any other push compares with the default
+      # branch.
+      - name: Choose the coverage base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n $PR_BASE ]]; then
+            base=$PR_BASE notation=...
+          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" && $BEFORE =~ ^0+$ ]]; then
+            base=$(git hash-object -t tree /dev/null) notation=..
+          elif [[ $EVENT == push && $REF == "refs/heads/$DEFAULT_BRANCH" ]]; then
+            base=$BEFORE notation=..
+          else
+            base=origin/$DEFAULT_BRANCH notation=...
+          fi
+          if ! git cat-file -e "$base"; then
+            git -c 'credential.helper=!gh auth git-credential' fetch --no-tags origin "${base#origin/}"
+          fi
+          {
+            echo "DIFF_COVER_COMPARE_BRANCH=$base"
+            echo "FORGE_DIFF_RANGE_NOTATION=$notation"
+          } >> "$GITHUB_ENV"
+      - name: Gate changed lines on every platform's coverage
+        env:
+          FORGE_COVERAGE_REPORTS: ${{ runner.temp }}/forge-coverage
+        run: uv run --locked pre-commit run tests-and-diff-coverage --hook-stage pre-push --all-files

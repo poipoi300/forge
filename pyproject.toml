@@ -3,6 +3,8 @@ name = "forge"
 version = "0.1.0"
 description = "A project-lifecycle system: spec intake, repo generation, and quality gates that tighten over time"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "pyyaml>=6.0.3",
@@ -10,6 +12,10 @@ dependencies = [
 
 [project.scripts]
 forge = "forge.cli:main"
+forge-hygiene = "forge.hooks.hygiene:main"
+forge-todo-gate = "forge.hooks.todo:main"
+forge-scan = "forge.hooks.scanners:main"
+forge-coverage-gate = "forge.hooks.coverage:main"
 
 [build-system]
 requires = ["uv_build>=0.8"]
@@ -71,3 +77,6 @@ exclude = ['^\.venv/']
 branch = true
 relative_files = true
 source = ["src"]
+
+[tool.coverage.report]
+include_namespace_packages = true
