@@ -44,10 +44,11 @@ check-toml = { required = ["uv"] }
 check-json = { required = ["uv"] }
 debug-statements = { required = ["uv"] }
 detect-private-key = { required = ["uv"] }
+no-todo = { required = ["uv"] }
 ruff-format = { required = ["uv"] }
 ruff-check = { required = ["uv"] }
 mypy = { required = ["uv"] }
-tests-and-diff-coverage = { required = ["bash", "git", "uv"] }
+tests-and-diff-coverage = { required = ["git", "uv"] }
 # Scanner gates are planned. Their tools are advisory until those gates land.
 gitleaks = { optional = ["gitleaks"] }
 osv-scanner = { optional = ["osv-scanner"] }
