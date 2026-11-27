@@ -18,6 +18,7 @@ def test_repo_config_is_valid() -> None:
     config = load_config(REPO_ROOT)
     assert config.harness().name == config.default_harness
     assert config.workspace_root == REPO_ROOT / "runs"
+    assert config.harness("claude").telemetry_format == "claude-json"
 
 
 def test_missing_file_raises() -> None:
@@ -40,6 +41,15 @@ def test_harness_command_must_be_string_list(tmp_path: Path) -> None:
         '[runner]\ndefault_harness = "bad"\n[harness.bad]\ncommand = "echo {prompt}"\n',
     )
     with pytest.raises(ConfigError, match="command"):
+        load_config(root)
+
+
+def test_unknown_telemetry_format_is_rejected(tmp_path: Path) -> None:
+    root = _write_config(
+        tmp_path,
+        '[runner]\ndefault_harness = "fake"\n[harness.fake]\ncommand = ["echo"]\ntelemetry_format = "text"\n',
+    )
+    with pytest.raises(ConfigError, match="telemetry_format"):
         load_config(root)
 
 

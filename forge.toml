@@ -2,21 +2,22 @@
 #
 # A harness is any CLI that takes a prompt and edits the current working
 # directory. The runner substitutes {prompt} (inline text) or {prompt_path}
-# (path to the .md file) into the command template and executes it with the
-# step workspace as cwd.
+# (path to the .md file) and {telemetry_path} into the command template and
+# executes it with the step workspace as cwd.
 
 [runner]
 # Which [harness.*] table to use when --harness is not passed.
 default_harness = "claude"
 # Where per-project run artifacts go (gitignored). Layout:
-#   <workspace_root>/<project>/step-NN-<name>/  agent workspace (copy-forward)
-#   <workspace_root>/<project>/meta/            manifests + stdout/stderr logs
+#   <workspace_root>/<project>/<run_id>/step-NN-<name>/  agent workspace
+#   <workspace_root>/<project>/<run_id>/meta/            manifests + logs
 workspace_root = "runs"
 # Hard ceiling per agent invocation, seconds.
 step_timeout_s = 3600
 
 [harness.claude]
-command = ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits"]
+command = ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits", "--output-format", "json"]
+telemetry_format = "claude-json"
 
 [harness.pi]
 command = ["pi", "--print", "{prompt}"]
