@@ -24,3 +24,33 @@ command = ["pi", "--print", "{prompt}"]
 
 [harness.opencode]
 command = ["opencode", "run", "{prompt}"]
+
+[requirements]
+required = ["uv", "git", "gh"]
+optional = ["bun", "cargo", "bwrap"]
+
+[requirements.harness]
+claude = { cli = "claude" }
+pi = { cli = "pi" }
+opencode = { cli = "opencode" }
+
+[requirements.gate]
+trailing-whitespace = { required = ["uv"] }
+end-of-file-fixer = { required = ["uv"] }
+check-merge-conflict = { required = ["uv"] }
+check-case-conflict = { required = ["git", "uv"] }
+check-added-large-files = { required = ["uv"] }
+check-yaml = { required = ["uv"] }
+check-toml = { required = ["uv"] }
+check-json = { required = ["uv"] }
+debug-statements = { required = ["uv"] }
+detect-private-key = { required = ["uv"] }
+no-todo = { required = ["uv"] }
+ruff-format = { required = ["uv"] }
+ruff-check = { required = ["uv"] }
+mypy = { required = ["uv"] }
+tests-and-diff-coverage = { required = ["git", "uv"] }
+# Scanner gates are planned. Their tools are advisory until those gates land.
+gitleaks = { optional = ["gitleaks"] }
+osv-scanner = { optional = ["osv-scanner"] }
+semgrep = { optional = ["semgrep"] }

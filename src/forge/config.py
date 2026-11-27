@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from forge.requirements import ConfigError as ConfigError
+from forge.requirements import HarnessRequirements, Requirements, parse_requirements, read_toml
+
 CONFIG_FILENAME = "forge.toml"
 _COMMIT_ID = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
-
-
-class ConfigError(Exception):
-    """forge.toml is missing, malformed, or references undefined entries."""
 
 
 @dataclass(frozen=True)
@@ -46,6 +44,7 @@ class ForgeConfig:
     workspace_root: Path
     step_timeout_s: float
     harnesses: dict[str, HarnessConfig]
+    requirements: Requirements = field(default_factory=Requirements)
     seeds: dict[str, PinnedSeed] = field(default_factory=dict)
 
     def harness(self, name: str | None = None) -> HarnessConfig:
@@ -67,10 +66,7 @@ def load_config(repo_root: Path) -> ForgeConfig:
     path = repo_root / CONFIG_FILENAME
     if not path.is_file():
         raise ConfigError(f"{path} not found")
-    try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"{path} is not valid TOML: {e}") from e
+    raw = read_toml(path)
 
     runner = raw.get("runner")
     if not isinstance(runner, dict):
@@ -102,6 +98,13 @@ def load_config(repo_root: Path) -> ForgeConfig:
     if not isinstance(step_timeout_s, int | float) or step_timeout_s <= 0:
         raise ConfigError("[runner] step_timeout_s must be a positive number")
 
+    requirements = parse_requirements(raw.get("requirements", {}))
+    for name, declaration in requirements.harnesses.items():
+        if name not in harnesses or declaration.cli != harnesses[name].command[0]:
+            raise ConfigError(f"[requirements.harness.{name}] cli must match the configured harness executable")
+    for name, harness in harnesses.items():
+        requirements.harnesses.setdefault(name, HarnessRequirements(harness.command[0]))
+
     seed_tables = raw.get("seed", {})
     if not isinstance(seed_tables, dict):
         raise ConfigError("forge.toml seed must be a table of [seed.<project>] entries")
@@ -120,5 +123,6 @@ def load_config(repo_root: Path) -> ForgeConfig:
         workspace_root=repo_root / workspace_root,
         step_timeout_s=float(step_timeout_s),
         harnesses=harnesses,
+        requirements=requirements,
         seeds=seeds,
     )

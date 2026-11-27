@@ -115,6 +115,35 @@ uv sync --locked
 uv run pre-commit install --install-hooks -t pre-commit -t pre-push
 ```
 
+Use `uv run forge doctor` to see which host tools are installed and which
+harnesses are available. On Arch Linux, doctor checks the package owner of
+the executable selected by `PATH`. A copy with no package owner is marked
+`unmanaged`. The report exits with status 1 when a required host or gate
+tool is missing. Optional tools, unmanaged tools, and unavailable harnesses
+are advisory.
+
+Project manifests (`forge.project.toml`) can use the same declarations as
+`forge.toml`. List host executables by name and group gate dependencies under
+their gate IDs. A harness is available when its CLI and any tools in its
+`required` list are present.
+
+```toml
+[requirements]
+required = ["git"]
+optional = ["gh"]
+
+[requirements.gate.tests-and-diff-coverage]
+required = ["git", "uv"]
+
+[requirements.harness.pi]
+cli = "pi"
+```
+
+Run `uv run forge doctor --manifest <project-directory> --json` to get the
+same report for a project's declarations. Project reports check presence and
+package ownership by default. With a trusted project and PATH, add
+`--trust-manifest` to also run each executable's version command.
+
 Run all gates manually:
 
 ```sh
